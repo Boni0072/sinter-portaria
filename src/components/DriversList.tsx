@@ -35,7 +35,7 @@ export default function DriversList() {
       if (!tenantId) return;
 
       let q = query(
-        collection(db, 'tenants', tenantId, 'drivers'), 
+        collection(db, 'drivers'), 
         orderBy('created_at', 'desc'),
         limit(ITEMS_PER_PAGE)
       );
@@ -154,81 +154,83 @@ export default function DriversList() {
             key={driver.id}
             className="bg-gradient-to-br from-white to-gray-50 border border-gray-200 rounded-xl p-6 hover:shadow-lg transition relative group"
           >
-            <div className="flex items-start justify-between mb-4">
-              {driver.photo_url ? (
-                <button 
-                  onClick={() => setZoomedImage(driver.photo_url!)}
-                  className="relative group cursor-zoom-in focus:outline-none"
-                  title="Ampliar foto"
-                >
-                  <img 
-                    src={driver.photo_url} 
-                    alt={driver.name} 
-                    className="w-12 h-12 rounded-full object-cover border-2 border-blue-100 group-hover:border-blue-400 transition-colors"
-                  />
-                </button>
-              ) : (
-                <div className="bg-blue-100 p-3 rounded-lg">
-                  <User className="w-6 h-6 text-blue-600" />
-                </div>
-              )}
+            <div className="flex items-start justify-between space-x-6 w-full">
+              {/* Foto */}
+              <div className="flex-shrink-0">
+                {driver.photo_url ? (
+                  <button 
+                    onClick={() => setZoomedImage(driver.photo_url!)}
+                    className="relative group cursor-zoom-in focus:outline-none"
+                    title="Ampliar foto"
+                  >
+                    <img 
+                      src={driver.photo_url} 
+                      alt={driver.name} 
+                      className="w-32 h-32 rounded-lg object-cover border-4 border-blue-100 group-hover:border-blue-400 transition-colors"
+                    />
+                  </button>
+                ) : (
+                  <div className="bg-blue-100 p-4 rounded-lg flex items-center justify-center w-32 h-32">
+                    <User className="w-16 h-16 text-blue-600" />
+                  </div>
+                )}
+              </div>
               
-              <div className="flex items-center space-x-2">
-                {driver.signature_url && (
-                  <div className="bg-green-100 p-2 rounded-lg" title="Assinatura cadastrada">
-                    <PenTool className="w-4 h-4 text-green-600" />
+              {/* Infos e Assinatura */}
+              <div className="flex-grow flex items-start justify-between">
+                {/* Informações */}
+                <div className="flex flex-col justify-center h-32">
+                  <p className="font-bold text-xl text-gray-800">{driver.name}</p>
+                  <div className="mt-2 space-y-1">
+                    <div className="flex items-center text-sm text-gray-600">
+                      <FileText className="w-4 h-4 mr-2 flex-shrink-0 text-gray-500" />
+                      <span>{driver.document}</span>
+                    </div>
+                    {driver.phone && (
+                      <div className="flex items-center text-sm text-gray-600">
+                        <Phone className="w-4 h-4 mr-2 flex-shrink-0 text-gray-500" />
+                        <span>{driver.phone}</span>
+                      </div>
+                    )}
                   </div>
-                )}
-                {canManage && (
-                  <>
-                    <button onClick={() => handleEditClick(driver)} className="p-2 text-blue-600 hover:bg-blue-100 rounded-lg transition" title="Editar">
-                      <Edit2 className="w-4 h-4" />
-                    </button>
-                    <button onClick={() => handleDelete(driver.id)} className="p-2 text-red-600 hover:bg-red-100 rounded-lg transition" title="Excluir">
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </>
+                </div>
+
+                {/* Assinatura */}
+                {driver.signature_url && (
+                  <div className="flex-shrink-0">
+                      <p className="text-xs text-gray-500 mb-1 text-center">Assinatura:</p>
+                      <div 
+                        className="relative group cursor-zoom-in"
+                        onClick={() => setZoomedImage(driver.signature_url!)}
+                        title="Ampliar assinatura"
+                      >
+                        <img
+                          src={driver.signature_url}
+                          alt="Assinatura"
+                          className="w-40 h-24 object-contain bg-gray-50 border border-gray-200 rounded group-hover:border-blue-300 transition-colors"
+                        />
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/5 transition-colors rounded pointer-events-none">
+                          <Maximize2 className="w-5 h-5 text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </div>
+                      </div>
+                  </div>
                 )}
               </div>
             </div>
 
-            <h3 className="text-lg font-semibold text-gray-800 mb-3">
-              {driver.name}
-            </h3>
-
-            <div className="space-y-2">
-              <div className="flex items-center text-sm text-gray-600">
-                <FileText className="w-4 h-4 mr-2" />
-                <span>{driver.document}</span>
-              </div>
-
-              {driver.phone && (
-                <div className="flex items-center text-sm text-gray-600">
-                  <Phone className="w-4 h-4 mr-2" />
-                  <span>{driver.phone}</span>
-                </div>
+            {/* Botões de Ação */}
+            <div className="absolute top-4 right-4 flex items-center space-x-1 bg-white/50 backdrop-blur-sm p-1 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+              {canManage && (
+                <>
+                  <button onClick={() => handleEditClick(driver)} className="p-2 text-blue-600 hover:bg-blue-100 rounded-lg transition" title="Editar">
+                    <Edit2 className="w-4 h-4" />
+                  </button>
+                  <button onClick={() => handleDelete(driver.id)} className="p-2 text-red-600 hover:bg-red-100 rounded-lg transition" title="Excluir">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </>
               )}
             </div>
-
-            {driver.signature_url && (
-              <div className="mt-4 pt-4 border-t border-gray-200">
-                <p className="text-xs text-gray-500 mb-2">Assinatura:</p>
-                <div 
-                  className="relative group cursor-zoom-in"
-                  onClick={() => setZoomedImage(driver.signature_url!)}
-                  title="Ampliar assinatura"
-                >
-                  <img
-                    src={driver.signature_url}
-                    alt="Assinatura"
-                    className="w-full h-20 object-contain bg-white border border-gray-200 rounded group-hover:border-blue-300 transition-colors"
-                  />
-                  <div className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/5 transition-colors rounded pointer-events-none">
-                    <Maximize2 className="w-5 h-5 text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity" />
-                  </div>
-                </div>
-              </div>
-            )}
           </div>
         ))}
       </div>

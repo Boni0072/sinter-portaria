@@ -1,3 +1,4 @@
+gcloud storage buckets update gs://cc-contrutora.firebasestorage.app --cors-file=cors.json
 [
   {
     "origin": ["*"],

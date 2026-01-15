@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
-import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, getFirestore } from "firebase/firestore";
+import { getFirestore, doc, setDoc } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 import { getAuth } from "firebase/auth";
 
@@ -11,6 +11,7 @@ export {
   getDocs,
   updateDoc,
   doc,
+  setDoc,
   query,
   where,
   orderBy,
@@ -30,19 +31,11 @@ export const firebaseConfig = {
 // Initialize Firebase
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
-let dbInstance;
-try {
-  dbInstance = initializeFirestore(app, {
-    localCache: persistentLocalCache({
-      tabManager: persistentMultipleTabManager()
-    })
-  });
-} catch (error) {
-  // Se já estiver inicializado (HMR ou recarga), usa a instância existente
-  dbInstance = getFirestore(app);
-}
+// Inicialização padrão e estável do Firestore
+const db = getFirestore(app, 'cccastilho');
 
-export const db = dbInstance;
+
+export { db };
 
 export const storage = getStorage(app);
 export const auth = getAuth(app);

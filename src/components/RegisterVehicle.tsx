@@ -1,14 +1,15 @@
 import { useState, useEffect } from 'react';
 import { db, Driver } from './firebase';
-import { collection, addDoc, getDocs, query, orderBy, where } from 'firebase/firestore';
+import { collection, addDoc, getDocs, query, orderBy, where, doc, getDoc } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { Save } from 'lucide-react';
+import { Save, Building2 } from 'lucide-react';
 
 interface Props {
   onSuccess: () => void;
+  tenantId?: string;
 }
 
-export default function RegisterVehicle({ onSuccess }: Props) {
+export default function RegisterVehicle({ onSuccess, tenantId: propTenantId }: Props) {
   const { user, userProfile } = useAuth();
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [selectedDriver, setSelectedDriver] = useState('');
@@ -18,24 +19,92 @@ export default function RegisterVehicle({ onSuccess }: Props) {
   const [color, setColor] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [tenants, setTenants] = useState<{id: string, name: string}[]>([]);
+  const [currentTenantId, setCurrentTenantId] = useState<string>('');
 
   useEffect(() => {
-    if (userProfile) loadDrivers();
-  }, [userProfile]);
+    const initTenants = async () => {
+      if (!user?.uid) return;
+      
+      const defaultId = propTenantId || (userProfile as any)?.tenantId || user.uid;
+      const allowedTenants = (userProfile as any)?.allowedTenants;
+      
+      try {
+        let list: {id: string, name: string}[] = [];
+
+        if (allowedTenants && Array.isArray(allowedTenants) && allowedTenants.length > 0) {
+          const promises = allowedTenants.map(id => getDoc(doc(db, 'tenants', id)));
+          const docs = await Promise.all(promises);
+          list = docs
+            .filter(d => d.exists())
+            .map(d => ({ id: d.id, name: d.data()?.name || 'Empresa sem nome' }));
+        } else {
+          const q = query(collection(db, 'tenants'), where('created_by', '==', user.uid));
+          const snapshot = await getDocs(q);
+          if (!snapshot.empty) {
+            list = snapshot.docs.map(doc => ({
+              id: doc.id,
+              name: doc.data().name || 'Empresa sem nome'
+            }));
+          }
+        }
+        
+        // Fallback
+        if (list.length === 0 && defaultId) {
+           const docSnap = await getDoc(doc(db, 'tenants', defaultId));
+           if (docSnap.exists()) {
+             list.push({ id: docSnap.id, name: docSnap.data().name || 'Minha Empresa' });
+           }
+        }
+
+        // Remove duplicatas
+        list = list.filter((v, i, a) => a.findIndex(t => t.id === v.id) === i);
+
+        setTenants(list);
+        
+        if (list.some(t => t.id === defaultId)) {
+          setCurrentTenantId(defaultId);
+        } else if (list.length > 0) {
+          setCurrentTenantId(list[0].id);
+        } else {
+          setCurrentTenantId(defaultId);
+        }
+      } catch (error) {
+        console.error("Erro ao carregar empresas:", error);
+        setCurrentTenantId(defaultId);
+      }
+    };
+    
+    initTenants();
+  }, [user, userProfile, propTenantId]);
+
+  useEffect(() => {
+    if (tenants.length > 0 || currentTenantId) {
+      loadDrivers();
+    }
+  }, [tenants, currentTenantId]);
 
   const loadDrivers = async () => {
     try {
-      const tenantId = (userProfile as any)?.tenantId || user?.uid;
-      if (!tenantId) return;
+      if (tenants.length === 0 && !currentTenantId) return;
+      
+      // Busca motoristas de TODAS as empresas disponíveis
+      const targets = tenants.length > 0 ? tenants : [{ id: currentTenantId, name: 'Current' }];
+      
+      const promises = targets.map(t => 
+        getDocs(query(collection(db, 'tenants', t.id, 'drivers'), orderBy('name')))
+      );
 
-      const q = query(collection(db, 'tenants', tenantId, 'drivers'), orderBy('name'));
-      const querySnapshot = await getDocs(q);
-      const loadedDrivers = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Driver[];
+      const snapshots = await Promise.all(promises);
+      const allDrivers = snapshots.flatMap(snap => 
+        snap.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+      ) as Driver[];
 
-      setDrivers(loadedDrivers);
+      // Remove duplicatas e ordena
+      const uniqueDrivers = Array.from(new Map(allDrivers.map(d => [d.id, d])).values());
+      uniqueDrivers.sort((a, b) => a.name.localeCompare(b.name));
+
+      setDrivers(uniqueDrivers);
     } catch (err) {
       console.error('Erro ao carregar motoristas:', err);
     }
@@ -47,11 +116,12 @@ export default function RegisterVehicle({ onSuccess }: Props) {
     setLoading(true);
 
     try {
-      const tenantId = (userProfile as any)?.tenantId || user?.uid;
-      if (!tenantId) {
-        throw new Error('ID da empresa não encontrado. Faça login novamente.');
+      if (!currentTenantId) {
+        throw new Error('Selecione uma empresa para cadastrar o veículo.');
       }
-      await addDoc(collection(db, 'tenants', tenantId, 'vehicles'), {
+      
+      // Salva o veículo na empresa selecionada
+      await addDoc(collection(db, 'tenants', currentTenantId, 'vehicles'), {
         plate: plate.toUpperCase(),
         brand,
         model,
@@ -78,6 +148,26 @@ export default function RegisterVehicle({ onSuccess }: Props) {
       <h2 className="text-2xl font-bold text-gray-800 mb-6">Cadastrar Novo Veículo</h2>
 
       <form onSubmit={handleSubmit} className="space-y-6">
+        
+        {/* Seletor de Empresa (Aparece apenas se houver mais de una) */}
+        {tenants.length > 1 && (
+          <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+            <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
+              <Building2 className="w-4 h-4" /> Empresa / Unidade
+            </label>
+            <select
+              value={currentTenantId}
+              onChange={(e) => setCurrentTenantId(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+            >
+              {tenants.map(tenant => (
+                <option key={tenant.id} value={tenant.id}>{tenant.name}</option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500 mt-1">O veículo será vinculado a esta unidade.</p>
+          </div>
+        )}
+
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">
             Motorista Responsável

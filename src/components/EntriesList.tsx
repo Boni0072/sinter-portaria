@@ -5,6 +5,7 @@ import {
   getDocs, 
   updateDoc, 
   doc,
+  getDoc,
   query, 
   orderBy, 
   limit, 
@@ -14,7 +15,7 @@ import {
   QueryDocumentSnapshot 
 } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { LogOut, Clock, Calendar, Image as ImageIcon, ChevronDown, ChevronRight, X } from 'lucide-react';
+import { LogOut, Clock, Calendar, Image as ImageIcon, ChevronDown, ChevronRight, X, User, Download } from 'lucide-react';
 
 interface EntryWithDetails {
   id: string;
@@ -23,9 +24,11 @@ interface EntryWithDetails {
   vehicle_photo_url: string;
   plate_photo_url: string;
   notes: string;
+  registered_by_name?: string;
   driver: {
     name: string;
     document: string;
+    photo_url?: string;
   };
   vehicle: {
     plate: string;
@@ -37,10 +40,11 @@ interface EntryWithDetails {
 
 const ITEMS_PER_PAGE = 10;
 
-export default function EntriesList() {
+export default function EntriesList({ tenantId: propTenantId }: { tenantId?: string }) {
   // Contexto de autenticação
   const { user, userProfile } = useAuth();
   const [entries, setEntries] = useState<EntryWithDetails[]>([]);
+  const [tenantName, setTenantName] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
@@ -50,7 +54,24 @@ export default function EntriesList() {
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
 
   // Identifica o ID da empresa (Tenant) para uso em todo o componente
-  const tenantId = (userProfile as any)?.tenantId || user?.uid;
+  const tenantId = propTenantId || (userProfile as any)?.tenantId || user?.uid;
+
+  useEffect(() => {
+    const fetchTenantName = async () => {
+      if (tenantId) {
+        try {
+          const docRef = doc(db, 'tenants', tenantId);
+          const docSnap = await getDoc(docRef);
+          if (docSnap.exists()) {
+            setTenantName(docSnap.data().name || 'Empresa sem nome');
+          }
+        } catch (error) {
+          console.error("Erro ao buscar nome da empresa:", error);
+        }
+      }
+    };
+    fetchTenantName();
+  }, [tenantId]);
 
   useEffect(() => {
     if (user) {
@@ -108,15 +129,18 @@ export default function EntriesList() {
       // Extrair IDs para busca otimizada
       const entriesRaw = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
       
-      // Otimização: Só buscar IDs se não tiver dados em cache (cached_data)
+      // Buscar IDs de motoristas para obter a foto (mesmo se tiver cache de nome)
       const driverIds = [...new Set(entriesRaw
-        .filter(e => !e.cached_data)
         .map(e => e.driver_id)
         .filter(Boolean))] as string[];
         
       const vehicleIds = [...new Set(entriesRaw
         .filter(e => !e.cached_data)
         .map(e => e.vehicle_id)
+        .filter(Boolean))] as string[];
+
+      const userIds = [...new Set(entriesRaw
+        .map(e => e.registered_by)
         .filter(Boolean))] as string[];
 
       // Função auxiliar para buscar documentos por ID em lotes de 10
@@ -132,22 +156,30 @@ export default function EntriesList() {
         return snaps.flatMap(snap => snap.docs.map(d => ({ id: d.id, ...d.data() })));
       };
 
-      const [driversData, vehiclesData] = await Promise.all([
+      const [driversData, vehiclesData, usersData] = await Promise.all([
         fetchDocsByIds(`tenants/${tenantId}/drivers`, driverIds),
-        fetchDocsByIds(`tenants/${tenantId}/vehicles`, vehicleIds)
+        fetchDocsByIds(`tenants/${tenantId}/vehicles`, vehicleIds),
+        fetchDocsByIds('profiles', userIds)
       ]);
 
       const driversMap = new Map(driversData.map((d: any) => [d.id, d]));
       const vehiclesMap = new Map(vehiclesData.map((v: any) => [v.id, v]));
+      const usersMap = new Map(usersData.map((u: any) => [u.id, u]));
 
       const newEntries = entriesRaw.map(entry => {
+        const driverData = entry.driver_id ? driversMap.get(entry.driver_id) : null;
+        const vehicleData = entry.vehicle_id ? vehiclesMap.get(entry.vehicle_id) : null;
+        const userData = entry.registered_by ? usersMap.get(entry.registered_by) : null;
+
         // Se tiver dados cacheados (novos registros), usa eles e evita busca
         if (entry.cached_data) {
           return {
             ...entry,
+            registered_by_name: userData?.name || '---',
             driver: { 
               name: entry.cached_data.driver_name, 
-              document: entry.cached_data.driver_document 
+              document: entry.cached_data.driver_document,
+              photo_url: entry.cached_data.driver_photo_url || driverData?.photo_url
             },
             vehicle: { 
               plate: entry.cached_data.vehicle_plate, 
@@ -159,11 +191,9 @@ export default function EntriesList() {
         }
 
         // Fallback para registros antigos
-        const driverData = entry.driver_id ? driversMap.get(entry.driver_id) : null;
-        const vehicleData = entry.vehicle_id ? vehiclesMap.get(entry.vehicle_id) : null;
-
         return {
           ...entry,
+          registered_by_name: userData?.name || '---',
           driver: driverData || { name: 'Desconhecido', document: '---' },
           vehicle: vehicleData || { plate: '---', brand: '', model: '', color: '' }
         } as EntryWithDetails;
@@ -220,6 +250,38 @@ export default function EntriesList() {
     }
   };
 
+  const handleExport = () => {
+    if (entries.length === 0) return;
+
+    const csvContent = [
+      ['Empresa', 'Placa', 'Marca', 'Modelo', 'Cor', 'Observação', 'Motorista', 'Documento', 'Usuário', 'Entrada', 'Saída'],
+      ...entries.map(entry => [
+        tenantName,
+        entry.vehicle.plate,
+        entry.vehicle.brand,
+        entry.vehicle.model,
+        entry.vehicle.color,
+        (entry.notes || '').replace(/"/g, '""'),
+        entry.driver.name,
+        entry.driver.document,
+        entry.registered_by_name || '---',
+        formatDateTime(entry.entry_time),
+        entry.exit_time ? formatDateTime(entry.exit_time) : 'Em andamento'
+      ])
+    ]
+    .map(e => e.map(field => `"${field}"`).join(','))
+    .join('\n');
+
+    const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `registros_${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const formatDateTime = (dateString: string) => {
     const date = new Date(dateString);
     return date.toLocaleString('pt-BR', {
@@ -265,7 +327,17 @@ export default function EntriesList() {
 
   return (
     <div>
-      <h2 className="text-2xl font-bold text-gray-800 mb-6">Registros de Entrada e Saída</h2>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+        <h2 className="text-2xl font-bold text-gray-800">Registros de Entrada e Saída</h2>
+        <button
+          onClick={handleExport}
+          disabled={entries.length === 0}
+          className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+        >
+          <Download className="w-4 h-4" />
+          Exportar Excel
+        </button>
+      </div>
 
       {entries.length === 0 ? (
         <div className="text-center py-12">
@@ -279,12 +351,14 @@ export default function EntriesList() {
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Empresa</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Placa</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Marca</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Modelo</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cor</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Observação</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Motorista</th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Usuário</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Entrada</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Saída</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Evidências</th>
@@ -298,7 +372,7 @@ export default function EntriesList() {
                     className="bg-gray-100 border-y border-gray-200 cursor-pointer hover:bg-gray-200 transition-colors"
                     onClick={() => toggleGroup(group.date)}
                   >
-                    <td colSpan={10} className="px-6 py-2 text-sm font-bold text-gray-700">
+                    <td colSpan={12} className="px-6 py-2 text-sm font-bold text-gray-700">
                       <div className="flex items-center">
                         {collapsedGroups.has(group.date) ? (
                           <ChevronRight className="w-4 h-4 mr-2" />
@@ -317,6 +391,9 @@ export default function EntriesList() {
                   </tr>
                   {!collapsedGroups.has(group.date) && group.items.map((entry) => (
                 <tr key={entry.id} className={!entry.exit_time ? 'bg-green-50/30' : 'hover:bg-gray-50'}>
+                  <td className="px-6 py-2 whitespace-nowrap">
+                    <span className="text-sm font-medium text-gray-900">{tenantName}</span>
+                  </td>
                   <td className="px-6 py-2 whitespace-nowrap">
                     <span className="text-sm font-bold text-gray-900">{entry.vehicle.plate}</span>
                   </td>
@@ -339,9 +416,27 @@ export default function EntriesList() {
                     )}
                   </td>
                   <td className="px-6 py-2 whitespace-nowrap">
-                    <div className="flex flex-col">
-                      <span className="text-sm font-medium text-gray-900">{entry.driver.name}</span>
+                    <div className="flex items-center">
+                      {entry.driver.photo_url ? (
+                        <img 
+                          src={entry.driver.photo_url} 
+                          alt={entry.driver.name} 
+                          className="w-8 h-8 rounded-full object-cover mr-3 border border-gray-200 cursor-pointer hover:opacity-80 transition-opacity"
+                          onClick={() => setSelectedImage(entry.driver.photo_url!)}
+                        />
+                      ) : (
+                        <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center mr-3 border border-gray-200">
+                          <User className="w-5 h-5 text-gray-400" />
+                        </div>
+                      )}
+                      <div className="flex flex-col">
+                        <span className="text-sm font-medium text-gray-900">{entry.driver.name}</span>
+                        <span className="text-xs text-gray-500">{entry.driver.document}</span>
+                      </div>
                     </div>
+                  </td>
+                  <td className="px-6 py-2 whitespace-nowrap">
+                    <span className="text-sm text-gray-900">{entry.registered_by_name}</span>
                   </td>
                   <td className="px-6 py-2 whitespace-nowrap">
                     <div className="flex items-center text-xs text-gray-900">

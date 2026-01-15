@@ -1,56 +1,146 @@
 import { useState, useRef, useEffect } from 'react';
 import { db } from './firebase';
-import { doc, updateDoc } from 'firebase/firestore';
+import { doc, updateDoc, setDoc, getDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { LogOut, Users, ClipboardList, UserPlus, ChevronLeft, ChevronRight, Camera, Shield, ArrowRightLeft, Truck, BarChart3 } from 'lucide-react';
+import { LogOut, Users, ClipboardList, UserPlus, ChevronLeft, ChevronRight, Camera, Shield, ArrowRightLeft, Truck, BarChart3, CarFront, Building2, LayoutGrid } from 'lucide-react';
 import RegisterEntry from './RegisterEntry';
 import EntriesList from './EntriesList';
 import UserManagement from './UserManagement';
 import RegisterDriver from './RegisterDriver';
 import DriversList from './DriversList';
 import Indicators from './Indicators';
+import RegisterVehicle from './RegisterVehicle';
+import CompanySettings from './CompanySettings';
 
-type View = 'entries' | 'register-entry' | 'drivers' | 'register-driver' | 'users' | 'indicators';
+type View = 'entries' | 'register-entry' | 'drivers' | 'register-driver' | 'users' | 'indicators' | 'register-vehicle' | 'company-settings';
+
+interface Tenant {
+  id: string;
+  name: string;
+  type?: 'matriz' | 'filial';
+}
 
 export default function Dashboard() {
   const { user, userProfile, signOut, loading } = useAuth();
   const [currentView, setCurrentView] = useState<View>('indicators');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [customLogo, setCustomLogo] = useState<string | null>(localStorage.getItem('portal_custom_logo'));
+  const [portalTitle, setPortalTitle] = useState(localStorage.getItem('portal_title') || 'Sistema de Portaria');
+  const [portalSubtitle, setPortalSubtitle] = useState(localStorage.getItem('portal_subtitle') || 'Controle de Acesso');
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const canRegister = userProfile?.role === 'admin' || userProfile?.role === 'operator';
-  const canManageUsers = userProfile?.role === 'admin';
+  const [availableTenants, setAvailableTenants] = useState<Tenant[]>([]);
+  const [selectedTenantId, setSelectedTenantId] = useState<string>('');
 
+  // Auto-correção: Garante que o usuário atual tenha um perfil e tenantId
   useEffect(() => {
-    // Se a view atual for 'users' e o usuário não for admin, redireciona
-    if (currentView === 'users' && !canManageUsers) {
-      setCurrentView('indicators');
-    }
-    // Se a view for de registro e o usuário não tiver permissão, redireciona
-    if ((currentView === 'register-entry' || currentView === 'register-driver') && !canRegister) {
-      setCurrentView('indicators');
-    }
-  }, [currentView, canManageUsers, canRegister]);
-
-  // Auto-correção: Garante que o usuário atual tenha um tenantId
-  useEffect(() => {
-    if (user && userProfile && !userProfile.tenantId) {
-      const fixProfile = async () => {
+    if (user && !loading) {
+      const ensureProfile = async () => {
         try {
-          // Usa o próprio ID como tenantId (torna-se admin da própria conta)
-          await updateDoc(doc(db, 'profiles', user.uid), {
-            tenantId: user.uid,
-            role: 'admin'
-          });
-          console.log('Perfil corrigido: Tenant ID adicionado.');
+          const userRef = doc(db, 'profiles', user.uid);
+          const userSnap = await getDoc(userRef);
+
+          if (!userSnap.exists()) {
+            // Cria o perfil APENAS se ele realmente não existir no banco
+            await setDoc(userRef, {
+              email: user.email,
+              tenantId: user.uid,
+              role: 'admin',
+              created_at: new Date().toISOString()
+            });
+            console.log('Perfil criado automaticamente.');
+          } else {
+            // Se existir, verifica apenas se falta o tenantId (sem sobrescrever permissões)
+            if (!userSnap.data().tenantId) {
+              await updateDoc(userRef, { tenantId: user.uid });
+              console.log('Perfil corrigido: Tenant ID adicionado.');
+            }
+          }
         } catch (err) {
-          console.error('Erro ao corrigir perfil:', err);
+          console.error('Erro ao verificar/criar perfil:', err);
+        }
+
+        // Auto-criação: Garante que a coleção 'tenants' e o documento da empresa existam
+        try {
+          if (!user?.uid) return;
+          const tenantRef = doc(db, 'tenants', user.uid);
+          const tenantSnap = await getDoc(tenantRef);
+          
+          // Só cria a estrutura da empresa se o usuário for o dono do perfil (tenantId == uid)
+          // Isso evita criar empresas "fantasmas" para operadores/funcionários
+          if (!tenantSnap.exists() && userProfile?.tenantId === user.uid) {
+            await setDoc(tenantRef, {
+              name: 'Minha Empresa',
+              type: 'matriz',
+              created_at: new Date().toISOString(),
+              owner_id: user.uid,
+              email: user.email
+            });
+            console.log('Estrutura da empresa (tenants) criada com sucesso.');
+          }
+        } catch (err) {
+          console.error('Erro ao criar estrutura da empresa:', err);
         }
       };
-      fixProfile();
+      ensureProfile();
     }
-  }, [user, userProfile]);
+  }, [user, loading]);
+
+  // Carregar lista de empresas (Matriz + Filiais)
+  useEffect(() => {
+    const myTenantId = userProfile?.tenantId || user?.uid;
+    if (!myTenantId) return;
+
+    let unsubscribeFiliais: () => void;
+
+    // 1. Monitora a empresa atual (Matriz ou Filial)
+    const unsubscribeMyTenant = onSnapshot(doc(db, 'tenants', myTenantId), (docSnap) => {
+      if (docSnap.exists()) {
+        const myData = docSnap.data();
+        const myTenant: Tenant = { id: myTenantId, name: myData.name || 'Minha Empresa', type: myData.type || 'matriz' };
+
+        // SEMPRE busca por filiais vinculadas. Se existirem, mostramos no menu.
+        // Isso corrige o problema onde marcar a empresa como "Filial" escondia as sub-unidades.
+        const q = query(collection(db, 'tenants'), where('parentId', '==', myTenantId));
+        
+        if (unsubscribeFiliais) unsubscribeFiliais();
+        
+        unsubscribeFiliais = onSnapshot(q, (snapshot) => {
+          const filiais = snapshot.docs.map(d => ({ 
+            id: d.id, 
+            name: d.data().name, 
+            type: 'filial' as const 
+          }));
+
+          // Se tiver filiais, ou se não for explicitamente uma filial sem filhos, mostra a lista
+          if (filiais.length > 0 || myData.type !== 'filial') {
+            let all = [myTenant, ...filiais];
+            
+            // Filtrar por permissão do usuário (se não for admin ou se tiver restrições explícitas)
+            // @ts-ignore
+            if (userProfile?.allowedTenants && userProfile.allowedTenants.length > 0) {
+               // @ts-ignore
+               all = all.filter(t => userProfile.allowedTenants.includes(t.id));
+            }
+            setAvailableTenants(all);
+          } else {
+            setAvailableTenants([myTenant]);
+          }
+
+          // Mantém a seleção atual se válida, senão seleciona a matriz
+          if (!selectedTenantId || (selectedTenantId !== myTenantId && !filiais.find(f => f.id === selectedTenantId))) {
+              setSelectedTenantId(myTenantId);
+          }
+        });
+      }
+    });
+
+    return () => {
+      unsubscribeMyTenant();
+      if (unsubscribeFiliais) unsubscribeFiliais();
+    };
+  }, [user, userProfile]); // Removido currentView para evitar recarregamentos desnecessários
 
   const handleLogoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -73,27 +163,44 @@ export default function Dashboard() {
     );
   }
 
+  const commonProps = {
+    tenantId: selectedTenantId || userProfile?.tenantId || user?.uid
+  };
+
+  // Função auxiliar para verificar permissão de página
+  const canAccess = (pageId: string) => {
+    // @ts-ignore
+    if (userProfile?.allowedPages && userProfile.allowedPages.length > 0) {
+      // @ts-ignore
+      return userProfile.allowedPages.includes(pageId);
+    }
+    return true; // Se não tiver restrições definidas, permite tudo (comportamento padrão)
+  };
+
   const renderView = () => {
     switch (currentView) {
       case 'entries':
-        return <EntriesList />;
+        // @ts-ignore
+        return <EntriesList {...commonProps} />;
       case 'register-entry':
-        if (!canRegister) return <div className="p-6 text-center text-red-600 bg-red-50 rounded-lg">Acesso não autorizado.</div>;
-        return <RegisterEntry onSuccess={() => setCurrentView('indicators')} />;
+        // @ts-ignore
+        return <RegisterEntry onSuccess={() => setCurrentView('indicators')} {...commonProps} />;
       case 'drivers':
-        return <DriversList />;
+        // @ts-ignore
+        return <DriversList {...commonProps} />;
       case 'register-driver':
-        if (!canRegister) return <div className="p-6 text-center text-red-600 bg-red-50 rounded-lg">Acesso não autorizado.</div>;
-        return <RegisterDriver onSuccess={() => setCurrentView('drivers')} />;
+        return <RegisterDriver onSuccess={() => setCurrentView('drivers')} {...commonProps} />;
+      case 'register-vehicle':
+        // @ts-ignore
+        return <RegisterVehicle onSuccess={() => setCurrentView('indicators')} {...commonProps} />;
       case 'users':
-        if (!canManageUsers) {
-          return <div className="p-6 text-center text-red-600 bg-red-50 rounded-lg">Acesso não autorizado.</div>;
-        }
-        return <UserManagement />;
+        return <UserManagement {...commonProps} />;
+      case 'company-settings':
+        return <CompanySettings {...commonProps} />;
       case 'indicators':
-        return <Indicators />;
+        return <Indicators {...commonProps} />;
       default:
-        return <Indicators />;
+        return <Indicators {...commonProps} />;
     }
   };
 
@@ -135,18 +242,77 @@ export default function Dashboard() {
             />
           </div>
           {!isSidebarCollapsed && (
-            <>
-              <h1 className="text-xl font-bold text-white text-center whitespace-nowrap">
-                Sistema de Portaria
-              </h1>
-              <p className="text-xs text-blue-200 mt-1">Controle de Acesso</p>
-            </>
+            <div className="w-full text-center">
+              {isEditingTitle ? (
+                <div className="flex flex-col gap-2 mt-2 animate-in fade-in duration-200">
+                  <input
+                    type="text"
+                    value={portalTitle}
+                    onChange={(e) => setPortalTitle(e.target.value)}
+                    className="w-full px-2 py-1 text-sm text-gray-900 rounded border border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="Título do Sistema"
+                    autoFocus
+                  />
+                  <input
+                    type="text"
+                    value={portalSubtitle}
+                    onChange={(e) => setPortalSubtitle(e.target.value)}
+                    className="w-full px-2 py-1 text-xs text-gray-900 rounded border border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="Subtítulo"
+                  />
+                  <button
+                    onClick={() => {
+                      localStorage.setItem('portal_title', portalTitle);
+                      localStorage.setItem('portal_subtitle', portalSubtitle);
+                      setIsEditingTitle(false);
+                    }}
+                    className="w-full py-1 bg-green-500 hover:bg-green-600 text-white text-xs font-bold rounded transition-colors"
+                  >
+                    Salvar
+                  </button>
+                </div>
+              ) : (
+                <div 
+                  onClick={() => setIsEditingTitle(true)}
+                  className="cursor-pointer hover:bg-white/10 p-2 rounded-lg transition-colors group"
+                  title="Clique para editar título"
+                >
+                  <h1 className="text-xl font-bold text-white whitespace-nowrap">
+                    {portalTitle}
+                  </h1>
+                  <p className="text-xs text-blue-200 mt-1 group-hover:text-white transition-colors">
+                    {portalSubtitle}
+                  </p>
+                </div>
+              )}
+            </div>
           )}
         </div>
+
+        {/* Seletor de Empresa (Matriz/Filial) */}
+        {!isSidebarCollapsed && availableTenants.length > 1 && (
+          <div className="px-4 py-2">
+            <label className="text-xs text-blue-300 mb-1 block flex items-center gap-1">
+              <LayoutGrid className="w-3 h-3" /> Selecionar Unidade
+            </label>
+            <select
+              value={selectedTenantId}
+              onChange={(e) => setSelectedTenantId(e.target.value)}
+              className="w-full bg-blue-800 text-white text-sm border border-blue-700 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              {availableTenants.map(tenant => (
+                <option key={tenant.id} value={tenant.id}>
+                  {tenant.name} {tenant.type === 'matriz' ? '(Matriz)' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         <nav className="flex-1 px-4 py-6 space-y-2 overflow-y-auto">
           <button
             onClick={() => setCurrentView('indicators')}
+            style={{ display: canAccess('indicators') ? 'flex' : 'none' }}
             title={isSidebarCollapsed ? "Indicadores" : ""}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
               currentView === 'indicators'
@@ -158,23 +324,23 @@ export default function Dashboard() {
             {!isSidebarCollapsed && <span>Indicadores</span>}
           </button>
 
-          {canRegister && (
-            <button
-              onClick={() => setCurrentView('register-entry')}
-              title={isSidebarCollapsed ? "Registrar Entrada" : ""}
-              className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
-                currentView === 'register-entry'
-                  ? 'bg-blue-800 text-white font-medium shadow-inner'
-                  : 'text-blue-100 hover:bg-blue-800/50 hover:text-white'
-              }`}
-            >
-              <ArrowRightLeft className="w-5 h-5 min-w-[1.25rem]" />
-              {!isSidebarCollapsed && <span>Registrar Entrada</span>}
-            </button>
-          )}
+          <button
+            onClick={() => setCurrentView('register-entry')}
+            style={{ display: canAccess('register-entry') ? 'flex' : 'none' }}
+            title={isSidebarCollapsed ? "Registrar Entrada" : ""}
+            className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
+              currentView === 'register-entry'
+                ? 'bg-blue-800 text-white font-medium shadow-inner'
+                : 'text-blue-100 hover:bg-blue-800/50 hover:text-white'
+            }`}
+          >
+            <ArrowRightLeft className="w-5 h-5 min-w-[1.25rem]" />
+            {!isSidebarCollapsed && <span>Registrar Entrada</span>}
+          </button>
 
           <button
             onClick={() => setCurrentView('entries')}
+            style={{ display: canAccess('entries') ? 'flex' : 'none' }}
             title={isSidebarCollapsed ? "Ver Registros" : ""}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
               currentView === 'entries'
@@ -186,23 +352,23 @@ export default function Dashboard() {
             {!isSidebarCollapsed && <span>Ver Registros</span>}
           </button>
 
-          {canRegister && (
-            <button
-              onClick={() => setCurrentView('register-driver')}
-              title={isSidebarCollapsed ? "Cadastrar Motorista" : ""}
-              className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
-                currentView === 'register-driver'
-                  ? 'bg-blue-800 text-white font-medium shadow-inner'
-                  : 'text-blue-100 hover:bg-blue-800/50 hover:text-white'
-              }`}
-            >
-              <UserPlus className="w-5 h-5 min-w-[1.25rem]" />
-              {!isSidebarCollapsed && <span>Cadastrar Motorista</span>}
-            </button>
-          )}
+          <button
+            onClick={() => setCurrentView('register-driver')}
+            style={{ display: canAccess('register-driver') ? 'flex' : 'none' }}
+            title={isSidebarCollapsed ? "Cadastrar Motorista" : ""}
+            className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
+              currentView === 'register-driver'
+                ? 'bg-blue-800 text-white font-medium shadow-inner'
+                : 'text-blue-100 hover:bg-blue-800/50 hover:text-white'
+            }`}
+          >
+            <UserPlus className="w-5 h-5 min-w-[1.25rem]" />
+            {!isSidebarCollapsed && <span>Cadastrar Motorista</span>}
+          </button>
 
           <button
             onClick={() => setCurrentView('drivers')}
+            style={{ display: canAccess('drivers') ? 'flex' : 'none' }}
             title={isSidebarCollapsed ? "Ver Motoristas" : ""}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
               currentView === 'drivers'
@@ -214,20 +380,47 @@ export default function Dashboard() {
             {!isSidebarCollapsed && <span>Ver Motoristas</span>}
           </button>
 
-          {canManageUsers && (
-            <button
-              onClick={() => setCurrentView('users')}
-              title={isSidebarCollapsed ? "Gerenciar Usuários" : ""}
-              className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
-                currentView === 'users'
-                  ? 'bg-blue-800 text-white font-medium shadow-inner'
-                  : 'text-blue-100 hover:bg-blue-800/50 hover:text-white'
-              }`}
-            >
-              <Shield className="w-5 h-5 min-w-[1.25rem]" />
-              {!isSidebarCollapsed && <span>Usuários</span>}
-            </button>
-          )}
+          <button
+            onClick={() => setCurrentView('register-vehicle')}
+            style={{ display: canAccess('register-vehicle') ? 'flex' : 'none' }}
+            title={isSidebarCollapsed ? "Cadastrar Veículo" : ""}
+            className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
+              currentView === 'register-vehicle'
+                ? 'bg-blue-800 text-white font-medium shadow-inner'
+                : 'text-blue-100 hover:bg-blue-800/50 hover:text-white'
+            }`}
+          >
+            <CarFront className="w-5 h-5 min-w-[1.25rem]" />
+            {!isSidebarCollapsed && <span>Cadastrar Veículo</span>}
+          </button>
+
+          <button
+            onClick={() => setCurrentView('company-settings')}
+            style={{ display: canAccess('company-settings') ? 'flex' : 'none' }}
+            title={isSidebarCollapsed ? "Minha Empresa" : ""}
+            className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
+              currentView === 'company-settings'
+                ? 'bg-blue-800 text-white font-medium shadow-inner'
+                : 'text-blue-100 hover:bg-blue-800/50 hover:text-white'
+            }`}
+          >
+            <Building2 className="w-5 h-5 min-w-[1.25rem]" />
+            {!isSidebarCollapsed && <span>Minha Empresa</span>}
+          </button>
+
+          <button
+            onClick={() => setCurrentView('users')}
+            style={{ display: canAccess('users') ? 'flex' : 'none' }}
+            title={isSidebarCollapsed ? "Gerenciar Usuários" : ""}
+            className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
+              currentView === 'users'
+                ? 'bg-blue-800 text-white font-medium shadow-inner'
+                : 'text-blue-100 hover:bg-blue-800/50 hover:text-white'
+            }`}
+          >
+            <Shield className="w-5 h-5 min-w-[1.25rem]" />
+            {!isSidebarCollapsed && <span>Usuários</span>}
+          </button>
         </nav>
 
         <div className="p-4 border-t border-blue-800 bg-blue-900">

@@ -1,22 +1,36 @@
 import { useState, useEffect } from 'react';
 import { db, UserProfile, firebaseConfig } from './firebase';
 import { collection, getDocs, updateDoc, doc, query, orderBy, setDoc, where, limit, startAfter, QueryDocumentSnapshot } from 'firebase/firestore';
-import { initializeApp, deleteApp } from 'firebase/app';
+import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { useAuth } from '../contexts/AuthContext';
-import { Shield, Mail, Calendar, Edit2, Check, X, UserPlus, Save, Eye, EyeOff, ChevronDown } from 'lucide-react';
+import { Shield, Mail, Calendar, Edit2, Check, X, UserPlus, Save, Eye, EyeOff, ChevronDown, Building2 } from 'lucide-react';
 
 const ITEMS_PER_PAGE = 10;
 
-export default function UserManagement() {
-  const { userProfile } = useAuth();
+interface Props {
+  tenantId?: string;
+}
+
+const AVAILABLE_PAGES = [
+  { id: 'indicators', label: 'Indicadores' },
+  { id: 'register-entry', label: 'Registrar Entrada' },
+  { id: 'entries', label: 'Ver Registros' },
+  { id: 'register-driver', label: 'Cadastrar Motorista' },
+  { id: 'drivers', label: 'Ver Motoristas' },
+  { id: 'register-vehicle', label: 'Cadastrar Veículo' },
+  { id: 'company-settings', label: 'Minha Empresa' },
+  { id: 'users', label: 'Gerenciar Usuários' }
+];
+
+export default function UserManagement({ tenantId: propTenantId }: Props) {
+  const { user, userProfile } = useAuth();
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [lastVisible, setLastVisible] = useState<QueryDocumentSnapshot | null>(null);
   const [hasMore, setHasMore] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [tempRole, setTempRole] = useState<string>('');
   const [error, setError] = useState('');
   
   const [isRegistering, setIsRegistering] = useState(false);
@@ -24,10 +38,73 @@ export default function UserManagement() {
   const [newPassword, setNewPassword] = useState('');
   const [newRole, setNewRole] = useState('viewer');
   const [showPassword, setShowPassword] = useState(false);
+  const [tenants, setTenants] = useState<{id: string, name: string, type?: string, parentId?: string}[]>([]);
+  
+  // Novos estados para permissões
+  const [selectedTenants, setSelectedTenants] = useState<string[]>([]);
+  const [selectedPages, setSelectedPages] = useState<string[]>([]);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editingUser, setEditingUser] = useState<UserProfile | null>(null);
+
+  const activeTenantId = propTenantId || userProfile?.tenantId;
 
   useEffect(() => {
     if (userProfile) loadUsers(true);
-  }, [userProfile]);
+  }, [userProfile, activeTenantId]);
+
+  useEffect(() => {
+    const fetchTenants = async () => {
+      if (!user?.uid) return;
+      try {
+        const q = query(collection(db, 'tenants'), where('created_by', '==', user.uid));
+        const snapshot = await getDocs(q);
+        const list = snapshot.docs.map(doc => ({ 
+          id: doc.id, 
+          name: doc.data().name,
+          type: doc.data().type,
+          parentId: doc.data().parentId
+        }));
+
+        // Ordenar: Matrizes primeiro, depois por nome
+        list.sort((a, b) => {
+          if (a.type === 'matriz' && b.type !== 'matriz') return -1;
+          if (a.type !== 'matriz' && b.type === 'matriz') return 1;
+          return a.name.localeCompare(b.name);
+        });
+
+        setTenants(list);
+        
+        // Pré-seleciona a empresa atual se estiver criando
+        if (activeTenantId && list.some(t => t.id === activeTenantId)) {
+           setSelectedTenants(prev => prev.length === 0 ? [activeTenantId] : prev);
+        }
+      } catch (e) {
+        console.error("Erro ao buscar empresas:", e);
+      }
+    };
+    fetchTenants();
+  }, [user, activeTenantId]);
+
+  const handleTenantChange = (tenantId: string, isChecked: boolean) => {
+    const tenant = tenants.find(t => t.id === tenantId);
+    let newSelected = isChecked 
+      ? [...selectedTenants, tenantId]
+      : selectedTenants.filter(id => id !== tenantId);
+
+    // Se for matriz, seleciona/deseleciona todas as filiais automaticamente
+    if (tenant?.type === 'matriz') {
+      const subsidiaries = tenants.filter(t => t.parentId === tenantId);
+      const subsidiaryIds = subsidiaries.map(t => t.id);
+      
+      if (isChecked) {
+        newSelected = [...new Set([...newSelected, ...subsidiaryIds])];
+      } else {
+        newSelected = newSelected.filter(id => !subsidiaryIds.includes(id));
+      }
+    }
+    
+    setSelectedTenants(newSelected);
+  };
 
   const loadUsers = async (isInitial = false) => {
     try {
@@ -38,12 +115,11 @@ export default function UserManagement() {
         setLoadingMore(true);
       }
 
-      const tenantId = userProfile?.tenantId;
-      if (!tenantId) return;
+      if (!activeTenantId) return;
 
       let q = query(
         collection(db, 'profiles'), 
-        where('tenantId', '==', tenantId), 
+        where('tenantId', '==', activeTenantId), 
         orderBy('created_at', 'desc'),
         limit(ITEMS_PER_PAGE)
       );
@@ -51,7 +127,7 @@ export default function UserManagement() {
       if (!isInitial && lastVisible) {
         q = query(
           collection(db, 'profiles'), 
-          where('tenantId', '==', tenantId), 
+          where('tenantId', '==', activeTenantId), 
           orderBy('created_at', 'desc'),
           startAfter(lastVisible),
           limit(ITEMS_PER_PAGE)
@@ -78,9 +154,13 @@ export default function UserManagement() {
       if (querySnapshot.docs.length < ITEMS_PER_PAGE) {
         setHasMore(false);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Erro ao carregar usuários:', err);
-      setError('Não foi possível carregar os usuários.');
+      if (err.code === 'failed-precondition' || err.message?.includes('index')) {
+        setError('Configuração necessária: É preciso criar um índice no Firebase. Verifique o link no console do navegador (F12).');
+      } else {
+        setError('Não foi possível carregar os usuários.');
+      }
     } finally {
       setLoading(false);
       setLoadingMore(false);
@@ -88,24 +168,30 @@ export default function UserManagement() {
   };
 
   const handleEdit = (user: UserProfile) => {
-    setEditingId(user.id);
-    setTempRole(user.role);
+    setEditingUser(user);
+    setNewRole(user.role);
+    // @ts-ignore
+    setSelectedTenants(user.allowedTenants || (user.tenantId ? [user.tenantId] : []));
+    // @ts-ignore
+    setSelectedPages(user.allowedPages || []);
+    setShowEditModal(true);
   };
 
-  const handleCancel = () => {
-    setEditingId(null);
-    setTempRole('');
-  };
-
-  const handleSave = async (id: string) => {
+  const handleSaveEdit = async () => {
+    if (!editingUser) return;
     try {
-      await updateDoc(doc(db, 'profiles', id), { role: tempRole });
+      await updateDoc(doc(db, 'profiles', editingUser.id), { 
+        role: newRole,
+        allowedTenants: selectedTenants,
+        allowedPages: selectedPages
+      });
 
-      setUsers(users.map(u => u.id === id ? { ...u, role: tempRole as any } : u));
-      setEditingId(null);
+      setUsers(users.map(u => u.id === editingUser.id ? { ...u, role: newRole as any, allowedTenants: selectedTenants, allowedPages: selectedPages } : u));
+      setShowEditModal(false);
+      setEditingUser(null);
     } catch (err) {
       console.error('Erro ao atualizar permissão:', err);
-      alert('Erro ao atualizar permissão');
+      alert('Erro ao atualizar usuário');
     }
   };
 
@@ -114,39 +200,56 @@ export default function UserManagement() {
     setLoading(true);
     setError('');
 
-    // Inicializa uma instância secundária do Firebase App
-    // Isso permite criar um usuário sem deslogar o usuário atual (Admin)
-    const secondaryApp = initializeApp(firebaseConfig, "Secondary");
-    const secondaryAuth = getAuth(secondaryApp);
+    let secondaryApp: FirebaseApp | undefined;
 
     try {
-      const tenantId = userProfile?.tenantId;
-      if (!tenantId) throw new Error("Erro de identificação da empresa (Tenant ID ausente).");
+      // Verifica se já existe uma instância para evitar erro de duplicidade
+      secondaryApp = getApps().find(app => app.name === "Secondary");
+      if (!secondaryApp) {
+        secondaryApp = initializeApp(firebaseConfig, "Secondary");
+      }
+      const secondaryAuth = getAuth(secondaryApp);
+
+      // Garante que haja pelo menos uma empresa selecionada (usa a atual como fallback)
+      const tenantsToSave = selectedTenants.length > 0 ? selectedTenants : (activeTenantId ? [activeTenantId] : []);
+
+      if (tenantsToSave.length === 0) throw new Error("Selecione pelo menos uma empresa.");
 
       const userCredential = await createUserWithEmailAndPassword(secondaryAuth, newEmail, newPassword);
       
       // Cria o perfil no Firestore com a permissão selecionada
       await setDoc(doc(db, 'profiles', userCredential.user.uid), {
         email: newEmail,
-        tenantId, // Associa o novo usuário ao mesmo tenant do admin
+        tenantId: tenantsToSave[0], // Define a primeira como principal para compatibilidade
+        allowedTenants: tenantsToSave,
+        allowedPages: selectedPages,
         role: newRole as 'admin' | 'operator' | 'viewer',
         created_at: new Date().toISOString()
       });
 
-      // Limpeza: desloga da instância secundária e a remove
+      // Limpeza: desloga da instância secundária (NÃO deleta o app para evitar erros de concorrência)
       await signOut(secondaryAuth);
-      await deleteApp(secondaryApp);
 
       setNewEmail('');
       setNewPassword('');
       setNewRole('viewer');
+      setSelectedTenants(activeTenantId ? [activeTenantId] : []);
+      setSelectedPages([]);
       setIsRegistering(false);
       loadUsers(true);
     } catch (err: any) {
       console.error('Erro ao cadastrar usuário:', err);
-      setError(err.message || 'Erro ao cadastrar usuário. Verifique se o email já existe ou a senha é muito fraca.');
-      // Tenta limpar o app secundário mesmo em caso de erro
-      try { await deleteApp(secondaryApp); } catch {}
+      
+      let msg = 'Erro ao cadastrar usuário.';
+      if (err.code === 'auth/email-already-in-use') {
+        msg = 'Este e-mail já está cadastrado no sistema. Tente outro.';
+      } else if (err.code === 'auth/weak-password') {
+        msg = 'A senha é muito fraca. Digite pelo menos 6 caracteres.';
+      } else if (err.code === 'auth/invalid-email') {
+        msg = 'O formato do e-mail é inválido.';
+      }
+      
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -234,6 +337,58 @@ export default function UserManagement() {
         <div className="bg-white border border-gray-200 rounded-xl p-6 mb-6 shadow-sm">
           <h3 className="text-lg font-semibold text-gray-800 mb-4">Cadastrar Novo Usuário</h3>
           <form onSubmit={handleRegister} className="space-y-4">
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Seleção de Empresas */}
+              {tenants.length > 0 && (
+                <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                  <label className="block text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
+                    <Building2 className="w-4 h-4" /> Acesso a Empresas
+                  </label>
+                  <div className="space-y-2 max-h-40 overflow-y-auto">
+                    {tenants.map(t => (
+                      <label key={t.id} className="flex items-center space-x-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={selectedTenants.includes(t.id)}
+                          onChange={(e) => handleTenantChange(t.id, e.target.checked)}
+                          className="rounded text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-sm text-gray-700">
+                          {t.name}
+                          {t.type === 'matriz' && <span className="ml-2 text-xs bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded-full">Matriz</span>}
+                          {t.type === 'filial' && <span className="ml-2 text-xs text-gray-500">(Filial)</span>}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Seleção de Páginas */}
+              <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                <label className="block text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
+                  <Shield className="w-4 h-4" /> Acesso a Páginas
+                </label>
+                <div className="space-y-2 max-h-40 overflow-y-auto">
+                  {AVAILABLE_PAGES.map(page => (
+                    <label key={page.id} className="flex items-center space-x-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={selectedPages.includes(page.id)}
+                        onChange={(e) => {
+                          if (e.target.checked) setSelectedPages([...selectedPages, page.id]);
+                          else setSelectedPages(selectedPages.filter(id => id !== page.id));
+                        }}
+                        className="rounded text-blue-600 focus:ring-blue-500"
+                      />
+                      <span className="text-sm text-gray-700">{page.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
@@ -324,17 +479,6 @@ export default function UserManagement() {
                     </div>
                   </td>
                   <td className="px-6 py-4">
-                    {editingId === user.id ? (
-                      <select
-                        value={tempRole}
-                        onChange={(e) => setTempRole(e.target.value)}
-                        className="block w-full px-3 py-1 text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
-                      >
-                        <option value="admin">Administrador</option>
-                        <option value="operator">Operador</option>
-                        <option value="viewer">Visualizador</option>
-                      </select>
-                    ) : (
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
                         user.role === 'admin' ? 'bg-purple-100 text-purple-800' :
                         user.role === 'operator' ? 'bg-green-100 text-green-800' :
@@ -342,19 +486,11 @@ export default function UserManagement() {
                       }`}>
                         {user.role === 'admin' ? 'Administrador' : user.role === 'operator' ? 'Operador' : 'Visualizador'}
                       </span>
-                    )}
                   </td>
                   <td className="px-6 py-4 text-right">
-                    {editingId === user.id ? (
-                      <div className="flex justify-end space-x-2">
-                        <button onClick={() => handleSave(user.id)} className="p-1 text-green-600 hover:bg-green-50 rounded"><Check className="w-5 h-5" /></button>
-                        <button onClick={handleCancel} className="p-1 text-red-600 hover:bg-red-50 rounded"><X className="w-5 h-5" /></button>
-                      </div>
-                    ) : (
                       <button onClick={() => handleEdit(user)} className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition">
                         <Edit2 className="w-5 h-5" />
                       </button>
-                    )}
                   </td>
                 </tr>
               ))}
@@ -387,6 +523,78 @@ export default function UserManagement() {
               </>
             )}
           </button>
+        </div>
+      )}
+
+      {/* Modal de Edição */}
+      {showEditModal && editingUser && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-lg w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto">
+            <h3 className="text-lg font-bold mb-4 text-gray-800">Editar Permissões: {editingUser.email}</h3>
+            
+            <div className="space-y-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Perfil de Acesso</label>
+                <select
+                  value={newRole}
+                  onChange={(e) => setNewRole(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                >
+                  <option value="viewer">Visualizador</option>
+                  <option value="operator">Operador</option>
+                  <option value="admin">Administrador</option>
+                </select>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                  <label className="block text-sm font-bold text-gray-700 mb-2">Acesso a Empresas</label>
+                  <div className="space-y-2">
+                    {tenants.map(t => (
+                      <label key={t.id} className="flex items-center space-x-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={selectedTenants.includes(t.id)}
+                          onChange={(e) => handleTenantChange(t.id, e.target.checked)}
+                          className="rounded text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-sm text-gray-700">
+                          {t.name}
+                          {t.type === 'matriz' && <span className="ml-2 text-xs bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded-full">Matriz</span>}
+                          {t.type === 'filial' && <span className="ml-2 text-xs text-gray-500">(Filial)</span>}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                  <label className="block text-sm font-bold text-gray-700 mb-2">Acesso a Páginas</label>
+                  <div className="space-y-2">
+                    {AVAILABLE_PAGES.map(page => (
+                      <label key={page.id} className="flex items-center space-x-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={selectedPages.includes(page.id)}
+                          onChange={(e) => {
+                            if (e.target.checked) setSelectedPages([...selectedPages, page.id]);
+                            else setSelectedPages(selectedPages.filter(id => id !== page.id));
+                          }}
+                          className="rounded text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-sm text-gray-700">{page.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 mt-6">
+              <button onClick={() => setShowEditModal(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg">Cancelar</button>
+              <button onClick={handleSaveEdit} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Salvar Alterações</button>
+            </div>
+          </div>
         </div>
       )}
     </div>

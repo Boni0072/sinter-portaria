@@ -1,25 +1,32 @@
 import { useState, useRef, useEffect } from 'react';
-import { db, storage } from './firebase';
-import { collection, addDoc } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { db } from './firebase';
+import { collection, doc, setDoc } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { Save, Eraser, Camera, Upload } from 'lucide-react';
+// src/components/RegisterDriver.tsx
+
+// Adicione 'Wifi' dentro das chaves
+import { User, Car, Phone, Wifi, Camera, Upload, Eraser, Save } from 'lucide-react'; 
+
+// import { Save, Eraser, Camera, Upload, Wifi } from 'lucide-react';
 
 interface Props {
   onSuccess: () => void;
+  tenantId?: string;
 }
 
-export default function RegisterDriver({ onSuccess }: Props) {
+export default function RegisterDriver({ onSuccess, tenantId: propTenantId }: Props) {
   const { user, userProfile } = useAuth();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [photo, setPhoto] = useState<File | null>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const [name, setName] = useState('');
-  const [document, setDocument] = useState('');
+  const [driverDocument, setDriverDocument] = useState('');
   const [phone, setPhone] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  const activeTenantId = propTenantId || (userProfile as any)?.tenantId || user?.uid;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -74,60 +81,112 @@ export default function RegisterDriver({ onSuccess }: Props) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
   };
 
+  const convertFileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.src = event.target?.result as string;
+        img.onload = () => {
+          const canvas = window.document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return reject(new Error('Erro ao processar imagem'));
+
+          const MAX_SIZE = 800;
+          let width = img.width;
+          let height = img.height;
+
+          if (width > height) {
+            if (width > MAX_SIZE) {
+              height *= MAX_SIZE / width;
+              width = MAX_SIZE;
+            }
+          } else {
+            if (height > MAX_SIZE) {
+              width *= MAX_SIZE / height;
+              height = MAX_SIZE;
+            }
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', 0.7));
+        };
+        img.onerror = (error) => reject(error);
+      };
+      reader.onerror = error => reject(error);
+    });
+  };
+
+  const testConnection = async () => {
+    try {
+      if (!activeTenantId) {
+        alert("Erro: Usuário não identificado.");
+        return;
+      }
+      
+      console.log("🔄 Testando conexão com Firestore...");
+      await setDoc(doc(db, 'tenants', activeTenantId), {
+        last_check: new Date().toISOString(),
+        status: 'active'
+      }, { merge: true });
+      
+      alert("✅ Conexão OK! A pasta 'tenants' foi verificada no banco de dados.");
+    } catch (err) {
+      console.error("❌ Erro de conexão:", err);
+      alert("❌ Erro ao conectar: " + (err instanceof Error ? err.message : String(err)));
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
+    console.log("🚀 [RegisterDriver] Iniciando processo de salvamento...");
 
     try {
       const canvas = canvasRef.current;
       if (!canvas) throw new Error('Canvas não encontrado');
 
-      const blob = await new Promise<Blob>((resolve, reject) => {
-        canvas.toBlob((blob) => {
-          if (blob) resolve(blob);
-          else reject(new Error('Falha ao gerar imagem da assinatura'));
-        }, 'image/png');
-      });
-
-      const tenantId = (userProfile as any)?.tenantId || user?.uid;
-      if (!tenantId) {
-        throw new Error('ID da empresa não encontrado. Faça login novamente.');
-      }
+      const signatureDataUrl = canvas.toDataURL('image/png');
 
       let photoUrl = null;
       if (photo) {
-        const photoName = `driver-photo-${Date.now()}-${photo.name}`;
-        const photoRef = ref(storage, `tenants/${tenantId}/driver-photos/${photoName}`);
-        await uploadBytes(photoRef, photo, { contentType: photo.type });
-        photoUrl = await getDownloadURL(photoRef);
+        console.log("📸 [RegisterDriver] Processando foto...");
+        photoUrl = await convertFileToBase64(photo);
       }
 
-      const sanitizedDoc = document.replace(/[^a-zA-Z0-9]/g, '');
-      const fileName = `${Date.now()}-${sanitizedDoc}.png`;
-      const storageRef = ref(storage, `tenants/${tenantId}/signatures/${fileName}`);
+      console.log("💾 [RegisterDriver] Salvando motorista...");
       
-      await uploadBytes(storageRef, blob, { contentType: 'image/png' });
-      const publicUrl = await getDownloadURL(storageRef);
-
-      await addDoc(collection(db, 'tenants', tenantId, 'drivers'), {
+      // Geração de ID antecipada em uma coleção global 'drivers'
+      const newDriverRef = doc(collection(db, 'drivers'));
+      
+      const driverData = {
         name,
-        document,
+        document: driverDocument,
         phone: phone || null,
-        signature_url: publicUrl,
+        signature_url: signatureDataUrl,
         photo_url: photoUrl,
         created_by: user?.uid,
         created_at: new Date().toISOString()
-      });
+      };
 
+      // Aguarda a confirmação real do servidor
+      await setDoc(newDriverRef, driverData);
+      console.log("✅ [RegisterDriver] Salvo com sucesso no Firestore. ID:", newDriverRef.id);
+      
       setName('');
-      setDocument('');
+      setDriverDocument('');
       setPhone('');
       setPhoto(null);
+      if (photoInputRef.current) photoInputRef.current.value = '';
       clearSignature();
+      
       onSuccess();
     } catch (err) {
-      console.error("Erro ao salvar motorista:", err);
+      console.error("❌ [RegisterDriver] Erro fatal:", err);
       setError(err instanceof Error ? err.message : 'Erro ao cadastrar motorista');
     } finally {
       setLoading(false);
@@ -136,7 +195,16 @@ export default function RegisterDriver({ onSuccess }: Props) {
 
   return (
     <div>
-      <h2 className="text-2xl font-bold text-gray-800 mb-6">Cadastrar Motorista</h2>
+      <div className="flex justify-between items-center mb-6">
+        <h2 className="text-2xl font-bold text-gray-800">Cadastrar Motorista</h2>
+        <button 
+          type="button" 
+          onClick={testConnection}
+          className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-2 px-3 py-1 bg-blue-50 rounded-lg border border-blue-100"
+        >
+          <Wifi className="w-4 h-4" /> Testar Conexão
+        </button>
+      </div>
 
       <form onSubmit={handleSubmit} className="space-y-6">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -159,8 +227,8 @@ export default function RegisterDriver({ onSuccess }: Props) {
             </label>
             <input
               type="text"
-              value={document}
-              onChange={(e) => setDocument(e.target.value)}
+              value={driverDocument}
+              onChange={(e) => setDriverDocument(e.target.value)}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               required
             />

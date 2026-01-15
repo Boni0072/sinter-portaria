@@ -1,17 +1,15 @@
 import { useState, useEffect, useRef } from 'react';
-import { storage, Driver, Vehicle } from './firebase';
-import { getFirestore, collection, addDoc, getDocs, query, where, orderBy } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { db, Driver, Vehicle } from './firebase';
+import { collection, addDoc, getDocs, query, where, orderBy, doc, setDoc, getDoc } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { Save, Camera, Upload, User, Truck, Check, Maximize2, X } from 'lucide-react';
+import { Save, Camera, Upload, User, Truck, Check, Maximize2, X, Building2, LogOut, ChevronDown, Search } from 'lucide-react';
 
 interface Props {
   onSuccess: () => void;
 }
 
 export default function RegisterEntry({ onSuccess }: Props) {
-  const { user, userProfile } = useAuth();
-  const db = getFirestore();
+  const { user, userProfile, signOut } = useAuth() as any;
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [selectedDriver, setSelectedDriver] = useState('');
@@ -29,6 +27,12 @@ export default function RegisterEntry({ onSuccess }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [isNewVehicle, setIsNewVehicle] = useState(false);
+  const [tenants, setTenants] = useState<{id: string, name: string}[]>([]);
+  const [currentTenantId, setCurrentTenantId] = useState<string>('');
+  const [checkingAccess, setCheckingAccess] = useState(true);
+  const [isRestrictedMode, setIsRestrictedMode] = useState(false);
+  const [isDriverListOpen, setIsDriverListOpen] = useState(false);
+  const [driverSearch, setDriverSearch] = useState('');
 
   const vehiclePhotoRef = useRef<HTMLInputElement>(null);
   const platePhotoRef = useRef<HTMLInputElement>(null);
@@ -36,16 +40,153 @@ export default function RegisterEntry({ onSuccess }: Props) {
   const selectedDriverData = drivers.find(d => d.id === selectedDriver);
 
   useEffect(() => {
-    if (user || userProfile) {
-      loadDrivers();
-    }
+    const initTenants = async () => {
+      if (!user?.uid) {
+        setCheckingAccess(false);
+        return;
+      }
+      
+      setCheckingAccess(true);
+      let defaultId = (userProfile as any)?.tenantId || user.uid;
+      let allowedTenants = (userProfile as any)?.allowedTenants;
+      
+      try {
+        // Validação de segurança: Busca dados atualizados do usuário no Firebase
+        const userDocRef = doc(db, 'profiles', user.uid);
+        const userDocSnap = await getDoc(userDocRef);
+        
+        if (userDocSnap.exists()) {
+          const userData = userDocSnap.data();
+          
+          // Atualiza com dados frescos do banco
+          if (userData.tenantId) defaultId = userData.tenantId;
+          if (userData.allowedTenants) allowedTenants = userData.allowedTenants;
+
+          // Validação de página
+          if (userData.allowedPages) {
+             let pages = userData.allowedPages;
+             // Garante que seja um array (caso tenha sido salvo como string no cadastro)
+             if (typeof pages === 'string') pages = [pages];
+
+             if (Array.isArray(pages)) {
+                setIsRestrictedMode(true);
+                if (!pages.includes('register_entry')) {
+                   setError('Acesso negado: Você não tem permissão para visualizar esta página.');
+                   setCheckingAccess(false);
+                   return;
+                }
+             }
+          }
+        }
+
+        let list: {id: string, name: string}[] = [];
+        let isRestricted = false;
+
+        // 1. Se o usuário tem permissões explícitas (sub-usuário/operador)
+        if (allowedTenants && Array.isArray(allowedTenants)) {
+          isRestricted = true;
+          if (allowedTenants.length > 0) {
+            const promises = allowedTenants.map((id: string) => getDoc(doc(db, 'tenants', id)));
+            const docs = await Promise.all(promises);
+            list = docs
+              .filter(d => d.exists())
+              .map(d => ({ id: d.id, name: d.data()?.name || 'Empresa sem nome' }));
+          }
+        } 
+        // 2. Se não tem permissões explícitas, tenta buscar pelo created_by (Dono/Admin)
+        else {
+          const q = query(collection(db, 'tenants'), where('created_by', '==', user.uid));
+          const snapshot = await getDocs(q);
+          if (!snapshot.empty) {
+            list = snapshot.docs.map(doc => ({
+              id: doc.id,
+              name: doc.data().name || 'Empresa sem nome'
+            }));
+          }
+          
+          // 3. Fallback: Apenas se não houver restrições explícitas
+          if (list.length === 0 && defaultId && !isRestricted) {
+             const docSnap = await getDoc(doc(db, 'tenants', defaultId));
+             if (docSnap.exists()) {
+               list.push({ id: docSnap.id, name: docSnap.data().name || 'Minha Empresa' });
+             }
+          }
+        }
+
+        // Remove duplicatas
+        list = list.filter((v, i, a) => a.findIndex(t => t.id === v.id) === i);
+
+        setTenants(list);
+        
+        // Lógica de seleção da empresa inicial
+        if (list.some(t => t.id === defaultId)) {
+          setCurrentTenantId(defaultId);
+        } else if (list.length > 0) {
+          setCurrentTenantId(list[0].id);
+        } else {
+          setCurrentTenantId(defaultId);
+        }
+      } catch (error) {
+        console.error("Erro ao carregar empresas:", error);
+        setCurrentTenantId(defaultId);
+      } finally {
+        setCheckingAccess(false);
+      }
+    };
+    
+    initTenants();
   }, [user, userProfile]);
 
+  const loadDrivers = async () => {
+    console.log("Iniciando loadDrivers...");
+    try {
+      // Busca todos os motoristas da coleção global 'drivers'
+      const q = query(collection(db, 'drivers'));
+      const snap = await getDocs(q);
+      console.log(`Consulta a 'drivers' retornou ${snap.docs.length} documentos.`);
+      
+      const allDrivers = snap.docs.map(doc => ({ 
+        id: doc.id, 
+        ...doc.data()
+      })) as Driver[];
+
+      // Ordena os motoristas manualmente no cliente
+      allDrivers.sort((a, b) => a.name.localeCompare(b.name));
+
+      console.log("Motoristas carregados:", allDrivers);
+      setDrivers(allDrivers);
+    } catch (err) {
+      console.error('Erro ao carregar motoristas:', err);
+    }
+  };
+
+  const loadVehicles = async (driverId: string) => {
+    try {
+      if (!driverId) return;
+      
+      // Busca veículos do motorista na subcoleção 'vehicles' dele
+      const q = query(collection(db, 'drivers', driverId, 'vehicles'), orderBy('plate'));
+      const snap = await getDocs(q);
+      const allVehicles = snap.docs.map(doc => ({ 
+        id: doc.id, 
+        ...doc.data() 
+      })) as Vehicle[];
+
+      setVehicles(allVehicles);
+    } catch (err) {
+      console.error('Erro ao carregar veículos:', err);
+    }
+  };
+
   useEffect(() => {
-    if (selectedDriver && (user || userProfile)) {
+    loadDrivers();
+  }, []);
+
+  useEffect(() => {
+    if (selectedDriver) {
       loadVehicles(selectedDriver);
     }
-  }, [selectedDriver, user, userProfile]);
+  }, [selectedDriver]);
 
   useEffect(() => {
     if (vehiclePhoto) {
@@ -65,48 +206,43 @@ export default function RegisterEntry({ onSuccess }: Props) {
     setPlatePhotoPreview(null);
   }, [platePhoto]);
 
-  const loadDrivers = async () => {
-    try {
-      const tenantId = (userProfile as any)?.tenantId || user?.uid;
-      if (!tenantId) return;
-      const q = query(collection(db, 'tenants', tenantId, 'drivers'), orderBy('name'));
-      const querySnapshot = await getDocs(q);
-      const loadedDrivers = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Driver[];
+  const convertFileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.src = event.target?.result as string;
+        img.onload = () => {
+          const canvas = window.document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return reject(new Error('Erro ao processar imagem'));
 
-      setDrivers(loadedDrivers);
-    } catch (err) {
-      console.error('Erro ao carregar motoristas:', err);
-    }
-  };
+          const MAX_SIZE = 800;
+          let width = img.width;
+          let height = img.height;
 
-  const loadVehicles = async (driverId: string) => {
-    try {
-      const tenantId = (userProfile as any)?.tenantId || user?.uid;
-      if (!tenantId) return;
-      const q = query(collection(db, 'tenants', tenantId, 'vehicles'), where('driver_id', '==', driverId), orderBy('plate'));
-      const querySnapshot = await getDocs(q);
-      const loadedVehicles = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Vehicle[];
+          if (width > height) {
+            if (width > MAX_SIZE) {
+              height *= MAX_SIZE / width;
+              width = MAX_SIZE;
+            }
+          } else {
+            if (height > MAX_SIZE) {
+              width *= MAX_SIZE / height;
+              height = MAX_SIZE;
+            }
+          }
 
-      setVehicles(loadedVehicles);
-    } catch (err) {
-      console.error('Erro ao carregar veículos:', err);
-    }
-  };
-
-  const uploadPhoto = async (file: File, bucket: string, tenantId: string) => {
-    if (!tenantId) throw new Error("Não foi possível identificar a empresa para o upload.");
-    const fileName = `${Date.now()}-${file.name}`;
-    const storageRef = ref(storage, `tenants/${tenantId}/${bucket}/${fileName}`);
-    
-    await uploadBytes(storageRef, file, { contentType: file.type });
-    const downloadURL = await getDownloadURL(storageRef);
-    return downloadURL;
+          canvas.width = width;
+          canvas.height = height;
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', 0.7));
+        };
+        img.onerror = (error) => reject(error);
+      };
+      reader.onerror = error => reject(error);
+    });
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -119,35 +255,53 @@ export default function RegisterEntry({ onSuccess }: Props) {
         throw new Error('Por favor, adicione as fotos do veículo e da placa');
       }
 
-      // Fallback: se não tiver tenantId no perfil, usa o UID do usuário
-      const tenantId = (userProfile as any)?.tenantId || user?.uid;
-
-      if (!tenantId) {
-        throw new Error('Erro de identificação da empresa. Tente recarregar a página.');
+      if (!currentTenantId) {
+        throw new Error('Selecione uma empresa para registrar a entrada.');
       }
+      
+      const tenantId = currentTenantId;
 
-      // Otimização: Uploads e criação de veículo em paralelo
+      // Garante que a "pasta" (documento) da empresa exista explicitamente no banco
+      await setDoc(doc(db, 'tenants', tenantId), {
+        last_activity: new Date().toISOString()
+      }, { merge: true });
+
+      // Otimização: Conversão para Base64 e criação de veículo em paralelo
       const uploadsPromise = Promise.all([
-        uploadPhoto(vehiclePhoto, 'vehicle-photos', tenantId),
-        uploadPhoto(platePhoto, 'plate-photos', tenantId)
+        convertFileToBase64(vehiclePhoto),
+        convertFileToBase64(platePhoto)
       ]);
 
-      let vehicleIdPromise = Promise.resolve(selectedVehicle);
+      // Lógica de salvamento robusta (Geração de ID antecipada)
+      let vehicleId = selectedVehicle;
+      const vehicleSavePromises = [];
 
       if (isNewVehicle) {
-        vehicleIdPromise = addDoc(collection(db, 'tenants', tenantId, 'vehicles'), {
+        if (!selectedDriver) {
+          throw new Error('Motorista deve ser selecionado para cadastrar um novo veículo.');
+        }
+        // Gera o ID localmente na subcoleção do motorista
+        const newVehicleRef = doc(collection(db, 'drivers', selectedDriver, 'vehicles'));
+        vehicleId = newVehicleRef.id;
+
+        const vehicleData = {
           plate: newPlate.toUpperCase(),
           brand: vehicleBrand,
           model: vehicleModel,
           color: vehicleColor,
-          driver_id: selectedDriver,
+          // O driver_id aqui é redundante pois já está no caminho, mas pode ser útil
+          driver_id: selectedDriver, 
           created_at: new Date().toISOString()
-        }).then(ref => ref.id);
+        };
+
+        // Aguarda salvamento real do veículo
+        vehicleSavePromises.push(setDoc(newVehicleRef, vehicleData));
       }
 
-      const [[vehiclePhotoUrl, platePhotoUrl], vehicleId] = await Promise.all([
+      // Aguarda uploads e o início do salvamento do veículo
+      const [[vehiclePhotoUrl, platePhotoUrl]] = await Promise.all([
         uploadsPromise,
-        vehicleIdPromise
+        ...vehicleSavePromises
       ]);
 
       // Otimização: Salvar dados desnormalizados para leitura rápida na lista
@@ -156,7 +310,9 @@ export default function RegisterEntry({ onSuccess }: Props) {
         ? { plate: newPlate.toUpperCase(), brand: vehicleBrand, model: vehicleModel, color: vehicleColor }
         : vehicles.find(v => v.id === selectedVehicle);
 
-      await addDoc(collection(db, 'tenants', tenantId, 'entries'), {
+      // Salvar Entrada com timeout de segurança
+      const newEntryRef = doc(collection(db, 'tenants', tenantId, 'entries'));
+      const entryData = {
         vehicle_id: vehicleId,
         driver_id: selectedDriver,
         vehicle_photo_url: vehiclePhotoUrl,
@@ -166,6 +322,7 @@ export default function RegisterEntry({ onSuccess }: Props) {
         cached_data: {
           driver_name: driverSnapshot?.name || 'Desconhecido',
           driver_document: driverSnapshot?.document || '',
+          driver_photo_url: driverSnapshot?.photo_url || '', // Salva a foto do motorista no registro
           vehicle_plate: vehicleSnapshot?.plate || '',
           vehicle_brand: vehicleSnapshot?.brand || '',
           vehicle_model: vehicleSnapshot?.model || '',
@@ -173,7 +330,10 @@ export default function RegisterEntry({ onSuccess }: Props) {
         },
         registered_by: user?.uid,
         entry_time: new Date().toISOString()
-      });
+      };
+
+      // Aguarda salvamento real da entrada
+      await setDoc(newEntryRef, entryData);
 
       setSelectedDriver('');
       setSelectedVehicle('');
@@ -185,23 +345,89 @@ export default function RegisterEntry({ onSuccess }: Props) {
       setVehiclePhoto(null);
       setPlatePhoto(null);
       setIsNewVehicle(false);
+
+      if (vehiclePhotoRef.current) vehiclePhotoRef.current.value = '';
+      if (platePhotoRef.current) platePhotoRef.current.value = '';
+
       onSuccess();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao registrar entrada');
-      console.error("Falha detalhada ao registrar entrada:", err); // Log detalhado para depuração
     } finally {
       setLoading(false);
     }
   };
 
+  if (checkingAccess) {
+    return (
+      <div className="flex justify-center items-center h-64">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
+  if (error && error.includes('Acesso negado')) {
+    return (
+      <div className="max-w-6xl mx-auto mt-8">
+        <div className="bg-red-50 border border-red-200 text-red-700 px-6 py-4 rounded-xl flex items-center gap-3">
+          <div className="w-2 h-2 bg-red-500 rounded-full"></div>
+          {error}
+        </div>
+      </div>
+    );
+  }
+
+  const containerClass = isRestrictedMode 
+    ? "fixed inset-0 z-[9999] bg-gray-50 overflow-y-auto p-4 md:p-8" 
+    : "max-w-6xl mx-auto";
+
   return (
-    <div className="max-w-6xl mx-auto">
+    <div className={containerClass}>
+      {isRestrictedMode && (
+        <div className="max-w-6xl mx-auto flex justify-between items-center mb-8 pb-4 border-b border-gray-200">
+           <div className="flex items-center gap-3">
+              <div className="p-2 bg-blue-600 rounded-lg">
+                <Building2 className="w-6 h-6 text-white" />
+              </div>
+              <h1 className="text-2xl font-bold text-gray-800">Controle de Acesso</h1>
+           </div>
+           <button 
+             onClick={() => signOut && signOut()} 
+             className="flex items-center gap-2 px-4 py-2 text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors font-medium"
+           >
+             <LogOut className="w-5 h-5" />
+             <span>Sair</span>
+           </button>
+        </div>
+      )}
+      
+      <div className={isRestrictedMode ? "max-w-6xl mx-auto" : ""}>
       <div className="mb-8">
         <h2 className="text-2xl font-bold text-gray-800">Registrar Entrada</h2>
         <p className="text-gray-500">Preencha os dados do motorista e veículo para liberar o acesso.</p>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-8">
+        {/* Seletor de Empresa (Aparece apenas se houver mais de uma) */}
+        {tenants.length > 1 && (
+          <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2 bg-blue-50 rounded-lg">
+                <Building2 className="w-6 h-6 text-blue-600" />
+              </div>
+              <h3 className="text-lg font-semibold text-gray-800">Unidade / Empresa</h3>
+            </div>
+            <select
+              value={currentTenantId}
+              onChange={(e) => setCurrentTenantId(e.target.value)}
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-gray-50 transition-all"
+            >
+              {tenants.map(tenant => (
+                <option key={tenant.id} value={tenant.id}>{tenant.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           
           {/* Coluna do Motorista (Esquerda) */}
@@ -215,27 +441,98 @@ export default function RegisterEntry({ onSuccess }: Props) {
               </div>
               
               <div className="space-y-6 flex-1">
-                <div>
+                <div className="relative">
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Selecione o Motorista
                   </label>
-                  <select
-                    value={selectedDriver}
-                    onChange={(e) => {
-                      setSelectedDriver(e.target.value);
-                      setSelectedVehicle('');
-                      setIsNewVehicle(false);
-                    }}
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-gray-50 transition-all"
-                    required
+                  
+                  {isDriverListOpen && (
+                    <div 
+                      className="fixed inset-0 z-10" 
+                      onClick={() => setIsDriverListOpen(false)}
+                    ></div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => setIsDriverListOpen(!isDriverListOpen)}
+                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-gray-50 transition-all text-left flex items-center justify-between relative z-20"
                   >
-                    <option value="">Selecione na lista...</option>
-                    {drivers.map((driver) => (
-                      <option key={driver.id} value={driver.id}>
-                        {driver.name} - {driver.document}
-                      </option>
-                    ))}
-                  </select>
+                    <div className="flex items-center gap-3 overflow-hidden">
+                      {selectedDriverData?.photo_url ? (
+                          <img src={selectedDriverData.photo_url} alt="" className="w-8 h-8 rounded-full object-cover border border-gray-200 shrink-0" />
+                      ) : (
+                          <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${selectedDriver ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-400'}`}>
+                            <User className="w-5 h-5" />
+                          </div>
+                      )}
+                      <span className={`truncate ${selectedDriver ? "text-gray-900 font-medium" : "text-gray-500"}`}>
+                        {selectedDriverData ? `${selectedDriverData.name} - ${selectedDriverData.document}` : "Selecione na lista..."}
+                      </span>
+                    </div>
+                    <ChevronDown className={`w-5 h-5 text-gray-400 transition-transform shrink-0 ${isDriverListOpen ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  {isDriverListOpen && (
+                    <div className="absolute z-30 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl max-h-80 overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200">
+                      <div className="p-3 border-b border-gray-100 bg-gray-50">
+                        <div className="relative">
+                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                          <input
+                            type="text"
+                            placeholder="Buscar por nome ou CPF..."
+                            value={driverSearch}
+                            onChange={(e) => setDriverSearch(e.target.value)}
+                            className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            autoFocus
+                          />
+                        </div>
+                      </div>
+                      
+                      <div className="overflow-y-auto flex-1">
+                        {drivers
+                          .filter(d => d.name.toLowerCase().includes(driverSearch.toLowerCase()) || d.document.includes(driverSearch))
+                          .map(driver => (
+                            <button
+                              key={driver.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedDriver(driver.id);
+                                setSelectedVehicle('');
+                                setIsNewVehicle(false);
+                                setIsDriverListOpen(false);
+                                setDriverSearch('');
+                              }}
+                              className="w-full px-4 py-3 flex items-center gap-3 hover:bg-blue-50 transition-colors border-b border-gray-50 last:border-0 text-left"
+                            >
+                              {driver.photo_url ? (
+                                <img 
+                                  src={driver.photo_url} 
+                                  alt={driver.name} 
+                                  className="w-10 h-10 rounded-full object-cover border border-gray-200 shrink-0"
+                                />
+                              ) : (
+                                <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center border border-gray-200 text-gray-400 shrink-0">
+                                  <User className="w-5 h-5" />
+                                </div>
+                              )}
+                              <div className="min-w-0">
+                                <p className="text-sm font-medium text-gray-900 truncate">{driver.name}</p>
+                                <p className="text-xs text-gray-500 truncate">{driver.document}</p>
+                              </div>
+                              {selectedDriver === driver.id && (
+                                <Check className="w-4 h-4 text-blue-600 ml-auto shrink-0" />
+                              )}
+                            </button>
+                          ))}
+                          {drivers.filter(d => d.name.toLowerCase().includes(driverSearch.toLowerCase()) || d.document.includes(driverSearch)).length === 0 && (
+                            <div className="p-4 text-center text-gray-500 text-sm">
+                              Nenhum motorista encontrado.
+                            </div>
+                          )}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {selectedDriverData && (
@@ -510,10 +807,11 @@ export default function RegisterEntry({ onSuccess }: Props) {
           </button>
         </div>
       </form>
+      </div>
 
       {zoomedImage && (
         <div 
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 backdrop-blur-sm animate-in fade-in duration-200 p-4"
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/95 backdrop-blur-sm animate-in fade-in duration-200 p-4"
           onClick={() => setZoomedImage(null)}
         >
           <img 
