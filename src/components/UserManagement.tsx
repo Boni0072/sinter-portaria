@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react';
 import { db, UserProfile, firebaseConfig } from './firebase';
-import { collection, getDocs, updateDoc, doc, query, orderBy, setDoc, where, limit, startAfter, QueryDocumentSnapshot, getDoc } from 'firebase/firestore';
+import { collection, getDocs, updateDoc, doc, query, orderBy, setDoc, where, limit, startAfter, QueryDocumentSnapshot, getDoc, deleteDoc } from 'firebase/firestore';
 import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { useAuth } from '../contexts/AuthContext';
-import { Shield, Mail, Calendar, Edit2, Check, X, UserPlus, Save, Eye, EyeOff, ChevronDown, Building2, User } from 'lucide-react';
+import { Shield, Mail, Calendar, Edit2, Check, X, UserPlus, Save, Eye, EyeOff, ChevronDown, Building2, User, Trash2 } from 'lucide-react';
 
 const ITEMS_PER_PAGE = 10;
 
@@ -264,6 +264,23 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
     } catch (err) {
       console.error('Erro ao atualizar permissão:', err);
       alert('Erro ao atualizar usuário');
+    }
+  };
+
+  const handleDelete = async (userId: string) => {
+    if (userId === user?.uid) {
+      alert("Você não pode excluir seu próprio usuário.");
+      return;
+    }
+
+    if (!window.confirm('Tem certeza que deseja excluir este usuário? Esta ação removerá o acesso do usuário ao sistema.')) return;
+
+    try {
+      await deleteDoc(doc(db, 'profiles', userId));
+      setUsers(prev => prev.filter(u => u.id !== userId));
+    } catch (err) {
+      console.error('Erro ao excluir usuário:', err);
+      alert('Erro ao excluir usuário.');
     }
   };
 
@@ -621,9 +638,19 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
                       </span>
                   </td>
                   <td className="px-6 py-4 text-right">
-                      <button onClick={() => handleEdit(user)} className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition">
-                        <Edit2 className="w-5 h-5" />
-                      </button>
+                      <div className="flex items-center justify-end gap-2">
+                        <button onClick={() => handleEdit(user)} className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition" title="Editar Permissões">
+                          <Edit2 className="w-5 h-5" />
+                        </button>
+                        <button 
+                          onClick={() => handleDelete(user.id)} 
+                          className={`p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition ${user.id === userProfile?.id ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          title="Excluir Usuário"
+                          disabled={user.id === userProfile?.id}
+                        >
+                          <Trash2 className="w-5 h-5" />
+                        </button>
+                      </div>
                   </td>
                 </tr>
               ))}
