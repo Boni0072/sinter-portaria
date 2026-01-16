@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { db, Driver } from './firebase';
-import { collection, addDoc, getDocs, query, orderBy, where, doc, getDoc } from 'firebase/firestore';
+import { collection, addDoc, getDocs, query, orderBy, where, doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
 import { Save, Building2 } from 'lucide-react';
 
@@ -49,7 +49,6 @@ export default function RegisterVehicle({ onSuccess, tenantId: propTenantId }: P
           }
         }
         
-        // Fallback
         if (list.length === 0 && defaultId) {
            const docSnap = await getDoc(doc(db, 'tenants', defaultId));
            if (docSnap.exists()) {
@@ -57,7 +56,6 @@ export default function RegisterVehicle({ onSuccess, tenantId: propTenantId }: P
            }
         }
 
-        // Remove duplicatas
         list = list.filter((v, i, a) => a.findIndex(t => t.id === v.id) === i);
 
         setTenants(list);
@@ -79,36 +77,36 @@ export default function RegisterVehicle({ onSuccess, tenantId: propTenantId }: P
   }, [user, userProfile, propTenantId]);
 
   useEffect(() => {
-    if (tenants.length > 0 || currentTenantId) {
-      loadDrivers();
+    if (tenants.length === 0 && !currentTenantId) {
+        setDrivers([]);
+        return;
     }
+
+    const targets = tenants.length > 0 ? tenants : [{ id: currentTenantId, name: 'Current' }];
+    const unsubscribes: (() => void)[] = [];
+    
+    let allDriversData: { [tenantId: string]: Driver[] } = {};
+
+    targets.forEach(t => {
+        const q = query(collection(db, 'tenants', t.id, 'drivers'), orderBy('name'));
+        const unsubscribe = onSnapshot(q, (snapshot) => {
+            allDriversData[t.id] = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Driver[];
+            
+            const combinedDrivers = Object.values(allDriversData).flat();
+            const uniqueDrivers = Array.from(new Map(combinedDrivers.map(d => [d.id, d])).values());
+            uniqueDrivers.sort((a, b) => a.name.localeCompare(b.name));
+            setDrivers(uniqueDrivers);
+
+        }, (err) => {
+            console.error(`Erro ao carregar motoristas de ${t.id}:`, err);
+        });
+        unsubscribes.push(unsubscribe);
+    });
+
+    return () => {
+        unsubscribes.forEach(unsub => unsub());
+    };
   }, [tenants, currentTenantId]);
-
-  const loadDrivers = async () => {
-    try {
-      if (tenants.length === 0 && !currentTenantId) return;
-      
-      // Busca motoristas de TODAS as empresas disponíveis
-      const targets = tenants.length > 0 ? tenants : [{ id: currentTenantId, name: 'Current' }];
-      
-      const promises = targets.map(t => 
-        getDocs(query(collection(db, 'tenants', t.id, 'drivers'), orderBy('name')))
-      );
-
-      const snapshots = await Promise.all(promises);
-      const allDrivers = snapshots.flatMap(snap => 
-        snap.docs.map(doc => ({ id: doc.id, ...doc.data() }))
-      ) as Driver[];
-
-      // Remove duplicatas e ordena
-      const uniqueDrivers = Array.from(new Map(allDrivers.map(d => [d.id, d])).values());
-      uniqueDrivers.sort((a, b) => a.name.localeCompare(b.name));
-
-      setDrivers(uniqueDrivers);
-    } catch (err) {
-      console.error('Erro ao carregar motoristas:', err);
-    }
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -120,7 +118,6 @@ export default function RegisterVehicle({ onSuccess, tenantId: propTenantId }: P
         throw new Error('Selecione uma empresa para cadastrar o veículo.');
       }
       
-      // Salva o veículo na empresa selecionada
       await addDoc(collection(db, 'tenants', currentTenantId, 'vehicles'), {
         plate: plate.toUpperCase(),
         brand,
@@ -149,7 +146,6 @@ export default function RegisterVehicle({ onSuccess, tenantId: propTenantId }: P
 
       <form onSubmit={handleSubmit} className="space-y-6">
         
-        {/* Seletor de Empresa (Aparece apenas se houver mais de una) */}
         {tenants.length > 1 && (
           <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
             <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">

@@ -261,7 +261,7 @@ export default function Dashboard() {
         return <EntriesList {...commonProps} />;
       case 'register-entry':
         // @ts-ignore
-        return <RegisterEntry onSuccess={() => setCurrentView('indicators')} {...commonProps} />;
+        return <RegisterEntry onSuccess={() => setCurrentView('entries')} {...commonProps} />;
       case 'drivers':
         // @ts-ignore
         return <DriversList {...commonProps} />;

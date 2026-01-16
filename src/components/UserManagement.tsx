@@ -1,6 +1,20 @@
 import { useState, useEffect } from 'react';
 import { db, UserProfile, firebaseConfig } from './firebase';
-import { collection, getDocs, updateDoc, doc, query, orderBy, setDoc, where, limit, startAfter, QueryDocumentSnapshot, getDoc, deleteDoc } from 'firebase/firestore';
+import { 
+  collection, 
+  getDocs, 
+  updateDoc, 
+  doc, 
+  query, 
+  orderBy, 
+  setDoc, 
+  where, 
+  limit, 
+  onSnapshot, 
+  QueryDocumentSnapshot, 
+  getDoc, 
+  deleteDoc 
+} from 'firebase/firestore';
 import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { useAuth } from '../contexts/AuthContext';
@@ -29,7 +43,7 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [lastVisible, setLastVisible] = useState<QueryDocumentSnapshot | null>(null);
+  const [limitCount, setLimitCount] = useState(ITEMS_PER_PAGE);
   const [hasMore, setHasMore] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [error, setError] = useState<any>('');
@@ -52,11 +66,82 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
   const activeTenantId = propTenantId || userProfile?.tenantId;
 
   useEffect(() => {
-    if (userProfile) {
-      if (activeTenantId === 'all' && tenants.length === 0) return;
-      loadUsers(true);
+    if (!userProfile || !activeTenantId) {
+      setLoading(false);
+      return;
     }
-  }, [userProfile, activeTenantId, tenants]);
+    if (activeTenantId === 'all' && tenants.length === 0) {
+        setUsers([]);
+        setLoading(false);
+        return;
+    };
+
+    if (limitCount === ITEMS_PER_PAGE) setLoading(true);
+    else setLoadingMore(true);
+
+    let q;
+    const baseConstraints = [orderBy('created_at', 'desc'), limit(limitCount)];
+
+    if (activeTenantId === 'all') {
+        const tenantIds = tenants.map(t => t.id).slice(0, 10);
+        if (tenantIds.length === 0) {
+            setUsers([]);
+            setLoading(false);
+            setLoadingMore(false);
+            return;
+        }
+        q = query(
+            collection(db, 'profiles'),
+            where('allowedTenants', 'array-contains-any', tenantIds),
+            ...baseConstraints
+        );
+    } else {
+        const currentTenant = tenants.find(t => t.id === activeTenantId);
+        let targetIds = [activeTenantId];
+        if (currentTenant?.type === 'matriz') {
+            const childIds = tenants.filter(t => t.parentId === activeTenantId).map(t => t.id);
+            targetIds = [...targetIds, ...childIds];
+        }
+        targetIds = targetIds.slice(0, 10);
+
+        q = query(
+            collection(db, 'profiles'),
+            where('allowedTenants', targetIds.length > 1 ? 'array-contains-any' : 'array-contains', targetIds.length > 1 ? targetIds : targetIds[0]),
+            ...baseConstraints
+        );
+    }
+
+    const unsubscribe = onSnapshot(q, (querySnapshot) => {
+        const loadedUsers = querySnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+        })) as UserProfile[];
+        
+        setUsers(loadedUsers);
+        setHasMore(querySnapshot.docs.length >= limitCount);
+        setLoading(false);
+        setLoadingMore(false);
+    }, (err) => {
+        console.error('Erro ao carregar usuários:', err);
+        if (err.code === 'failed-precondition' || err.message?.includes('index')) {
+          const message = err.message || '';
+          const match = message.match(/https:\/\/console\.firebase\.google\.com[^\s]*/);
+          const link = match ? match[0] : null;
+          
+          if (link) {
+            setError(<span>Configuração necessária: <a href={link} target="_blank" rel="noopener noreferrer" className="underline font-bold text-blue-700">Clique aqui para criar o índice</a>.</span>);
+          } else {
+            setError('Configuração necessária: É preciso criar um índice no Firebase. Verifique o link no console do navegador (F12).');
+          }
+        } else {
+          setError('Não foi possível carregar os usuários.');
+        }
+        setLoading(false);
+        setLoadingMore(false);
+    });
+
+    return () => unsubscribe();
+  }, [userProfile, activeTenantId, tenants, limitCount]);
 
   useEffect(() => {
     const fetchTenants = async () => {
@@ -137,106 +222,6 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
     }
     
     setSelectedTenants(newSelected);
-  };
-
-  const loadUsers = async (isInitial = false) => {
-    try {
-      if (isInitial) {
-        setLoading(true);
-        setHasMore(true);
-      } else {
-        setLoadingMore(true);
-      }
-
-      if (!activeTenantId) {
-        setLoading(false);
-        return;
-      }
-
-      let q;
-      const baseConstraints = [orderBy('created_at', 'desc')];
-
-      if (!isInitial && lastVisible) {
-        baseConstraints.push(startAfter(lastVisible));
-      }
-      baseConstraints.push(limit(ITEMS_PER_PAGE));
-
-      if (activeTenantId === 'all') {
-        // Se "Todas", busca usuários de qualquer empresa da lista (limite de 10 para query 'in')
-        const tenantIds = tenants.map(t => t.id).slice(0, 10);
-        
-        if (tenantIds.length === 0) {
-          setUsers([]);
-          setLoading(false);
-          setLoadingMore(false);
-          return;
-        }
-        
-        q = query(
-          collection(db, 'profiles'), 
-          where('allowedTenants', 'array-contains-any', tenantIds), 
-          ...baseConstraints
-        );
-      } else {
-        // Se for Matriz, inclui também usuários das filiais para garantir visibilidade total
-        const currentTenant = tenants.find(t => t.id === activeTenantId);
-        let targetIds = [activeTenantId];
-        
-        if (currentTenant?.type === 'matriz') {
-          const childIds = tenants.filter(t => t.parentId === activeTenantId).map(t => t.id);
-          targetIds = [...targetIds, ...childIds];
-        }
-        
-        // Limita a 10 IDs (limite do Firestore para consultas 'IN' ou 'ARRAY-CONTAINS-ANY')
-        targetIds = targetIds.slice(0, 10);
-
-        q = query(
-          collection(db, 'profiles'), 
-          // Usa 'array-contains-any' se houver múltiplas empresas (Matriz+Filiais), senão usa 'array-contains'
-          where('allowedTenants', targetIds.length > 1 ? 'array-contains-any' : 'array-contains', targetIds.length > 1 ? targetIds : targetIds[0]), 
-          ...baseConstraints
-        );
-      }
-
-      const querySnapshot = await getDocs(q);
-      
-      const loadedUsers = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as UserProfile[];
-
-      if (isInitial) {
-        setUsers(loadedUsers);
-      } else {
-        setUsers(prev => [...prev, ...loadedUsers]);
-      }
-
-      if (querySnapshot.docs.length > 0) {
-        setLastVisible(querySnapshot.docs[querySnapshot.docs.length - 1]);
-      }
-      
-      if (querySnapshot.docs.length < ITEMS_PER_PAGE) {
-        setHasMore(false);
-      }
-    } catch (err: any) {
-      console.error('Erro ao carregar usuários:', err);
-      if (err.code === 'failed-precondition' || err.message?.includes('index')) {
-        const message = err.message || '';
-        const match = message.match(/https:\/\/console\.firebase\.google\.com[^\s]*/);
-        const link = match ? match[0] : null;
-        
-        if (link) {
-          setError(<span>Configuração necessária: <a href={link} target="_blank" rel="noopener noreferrer" className="underline font-bold text-blue-700">Clique aqui para criar o índice</a>.</span>);
-        } else {
-          setError('Configuração necessária: É preciso criar um índice no Firebase. Verifique o link no console do navegador (F12).');
-        }
-      } else {
-        setError('Não foi possível carregar os usuários.');
-      }
-    } finally {
-      setLoading(false);
-      setLoadingMore(false);
-    }
   };
 
   const handleEdit = (user: UserProfile) => {
@@ -337,7 +322,7 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
       setSelectedTenants(activeTenantId ? [activeTenantId] : []);
       setSelectedPages([]);
       setIsRegistering(false);
-      loadUsers(true);
+      
     } catch (err: any) {
       console.error('Erro ao cadastrar usuário:', err);
       
@@ -667,7 +652,7 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
       {hasMore && (
         <div className="mt-6 text-center">
           <button
-            onClick={() => loadUsers(false)}
+            onClick={() => setLimitCount(prev => prev + ITEMS_PER_PAGE)}
             disabled={loadingMore}
             className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-blue-700 bg-blue-100 hover:bg-blue-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
           >

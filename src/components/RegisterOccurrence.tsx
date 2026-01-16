@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { db } from './firebase';
-import { collection, addDoc, getDocs, query, where, doc, getDoc, setDoc, orderBy, documentId } from 'firebase/firestore';
+import { collection, addDoc, getDocs, query, where, doc, getDoc, setDoc, orderBy, documentId, onSnapshot } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
 import { Save, Camera, Upload, AlertTriangle, X, Building2, User, ChevronDown, ChevronUp, Package, Shield, Car } from 'lucide-react';
 
@@ -105,21 +105,21 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
     initTenants();
   }, [user, userProfile, propTenantId]);
 
-  const loadOccurrences = async () => {
+  useEffect(() => {
     if (!currentTenantId) return;
-    try {
-      const q = query(
-        collection(db, 'tenants', currentTenantId, 'occurrences'),
-        orderBy('created_at', 'desc')
-      );
-      const snapshot = await getDocs(q);
+
+    const q = query(
+      collection(db, 'tenants', currentTenantId, 'occurrences'),
+      orderBy('created_at', 'desc')
+    );
+
+    const unsubscribe = onSnapshot(q, async (snapshot) => {
       const occurrencesList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
       // Buscar dados dos usuários que criaram as ocorrências
       const userIds = [...new Set(occurrencesList.map((o: any) => o.created_by).filter(Boolean))];
       const usersMap = new Map();
 
-      // Tenta buscar dados dos usuários, mas não falha se não tiver permissão
       try {
         if (userIds.length > 0) {
           const chunks = [];
@@ -141,7 +141,7 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
           }
         }
       } catch (userErr) {
-        console.warn("Não foi possível carregar detalhes dos usuários (permissão ou erro):", userErr);
+        console.warn("Não foi possível carregar detalhes dos usuários:", userErr);
       }
 
       const enriched = occurrencesList.map((occ: any) => ({
@@ -150,13 +150,11 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
       }));
 
       setOccurrences(enriched);
-    } catch (error) {
-      console.error("Erro ao carregar ocorrências:", error);
-    }
-  };
+    }, (error) => {
+      console.error("Erro no listener de ocorrências:", error);
+    });
 
-  useEffect(() => {
-    loadOccurrences();
+    return () => unsubscribe();
   }, [currentTenantId]);
 
   const handlePhotoChange = (index: number, file: File | null) => {
@@ -264,8 +262,7 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
       if (photoRefs[0].current) photoRefs[0].current.value = '';
       if (photoRefs[1].current) photoRefs[1].current.value = '';
       if (photoRefs[2].current) photoRefs[2].current.value = '';
-      
-      await loadOccurrences();
+      // Não precisa chamar loadOccurrences(), o onSnapshot atualizará a lista
       // onSuccess(); // Removido para manter o usuário na tela e ver a lista atualizada
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao registrar ocorrência');

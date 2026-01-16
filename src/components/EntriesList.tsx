@@ -9,7 +9,7 @@ import {
   query, 
   orderBy, 
   limit, 
-  startAfter, 
+  onSnapshot,
   where, 
   documentId,
   QueryDocumentSnapshot 
@@ -48,7 +48,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  const [lastVisible, setLastVisible] = useState<QueryDocumentSnapshot | null>(null);
+  const [limitCount, setLimitCount] = useState(ITEMS_PER_PAGE);
   const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
@@ -74,149 +74,129 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
   }, [tenantId]);
 
   useEffect(() => {
-    if (user) {
-      loadEntries(true);
-    } else {
+    if (!user) {
       // Limpa os dados e reseta o estado ao fazer logout.
       setEntries([]);
       setLoading(true);
+      setHasMore(true);
+      setLimitCount(ITEMS_PER_PAGE);
     }
-  }, [user, tenantId]);
+    // A busca de dados é tratada pelo useEffect que reage à mudança de tenantId.
+  }, [user]);
 
-  const loadEntries = async (isInitial = false) => {
-    try {
-      if (isInitial) {
-        setLoading(true);
-        setLastVisible(null); // Garante que a paginação seja resetada
-        setHasMore(true);     // em uma nova carga de dados (ex: troca de usuário)
-      } else {
-        setLoadingMore(true);
-      }
+  useEffect(() => {
+    let unsubscribe: () => void;
 
+    const fetchEntries = async () => {
       if (!tenantId) return;
-      console.log("🔍 [EntriesList] Tenant ID identificado:", tenantId);
+      
+      // Se for a primeira carga (limitCount == ITEMS_PER_PAGE), mostra loading principal
+      if (limitCount === ITEMS_PER_PAGE) setLoading(true);
+      else setLoadingMore(true);
 
       // Busca na subcoleção específica do tenant: tenants/{tenantId}/entries
       let q = query(
         collection(db, 'tenants', tenantId, 'entries'), 
         orderBy('entry_time', 'desc'), 
-        limit(ITEMS_PER_PAGE)
+        limit(limitCount)
       );
 
-      if (!isInitial && lastVisible) {
-        q = query(
-          collection(db, 'tenants', tenantId, 'entries'), 
-          orderBy('entry_time', 'desc'), 
-          startAfter(lastVisible), 
-          limit(ITEMS_PER_PAGE)
-        );
-      }
+      unsubscribe = onSnapshot(q, async (querySnapshot) => {
+        try {
+          if (querySnapshot.empty) {
+            setEntries([]);
+            setHasMore(false);
+            setLoading(false);
+            setLoadingMore(false);
+            return;
+          }
 
-      const querySnapshot = await getDocs(q);
-      console.log(`📄 [EntriesList] Registros encontrados em 'tenants/${tenantId}/entries':`, querySnapshot.size);
-      
-      if (querySnapshot.empty) {
-        setHasMore(false);
-        if (isInitial) setEntries([]);
-        setLoading(false);
-        setLoadingMore(false);
-        return;
-      }
+          // Verifica se tem mais registros para carregar
+          setHasMore(querySnapshot.docs.length >= limitCount);
 
-      setLastVisible(querySnapshot.docs[querySnapshot.docs.length - 1]);
-      if (querySnapshot.docs.length < ITEMS_PER_PAGE) setHasMore(false);
+          // Extrair IDs para busca otimizada
+          const entriesRaw = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
+          
+          // Buscar IDs de motoristas para obter a foto (mesmo se tiver cache de nome)
+          const driverIds = [...new Set(entriesRaw.map(e => e.driver_id).filter(Boolean))] as string[];
+          const vehicleIds = [...new Set(entriesRaw.filter(e => !e.cached_data).map(e => e.vehicle_id).filter(Boolean))] as string[];
+          const userIds = [...new Set(entriesRaw.map(e => e.registered_by).filter(Boolean))] as string[];
 
-      // Extrair IDs para busca otimizada
-      const entriesRaw = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
-      
-      // Buscar IDs de motoristas para obter a foto (mesmo se tiver cache de nome)
-      const driverIds = [...new Set(entriesRaw
-        .map(e => e.driver_id)
-        .filter(Boolean))] as string[];
-        
-      const vehicleIds = [...new Set(entriesRaw
-        .filter(e => !e.cached_data)
-        .map(e => e.vehicle_id)
-        .filter(Boolean))] as string[];
-
-      const userIds = [...new Set(entriesRaw
-        .map(e => e.registered_by)
-        .filter(Boolean))] as string[];
-
-      // Função auxiliar para buscar documentos por ID em lotes de 10
-      const fetchDocsByIds = async (collectionName: string, ids: string[]) => {
-        if (ids.length === 0) return [];
-        const chunks = [];
-        for (let i = 0; i < ids.length; i += 10) {
-          chunks.push(ids.slice(i, i + 10));
-        }
-        const snaps = await Promise.all(chunks.map(chunk => 
-          getDocs(query(collection(db, collectionName), where(documentId(), 'in', chunk)))
-        ));
-        return snaps.flatMap(snap => snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      };
-
-      const [driversData, vehiclesData, usersData] = await Promise.all([
-        fetchDocsByIds(`tenants/${tenantId}/drivers`, driverIds),
-        fetchDocsByIds(`tenants/${tenantId}/vehicles`, vehicleIds),
-        fetchDocsByIds('profiles', userIds)
-      ]);
-
-      const driversMap = new Map(driversData.map((d: any) => [d.id, d]));
-      const vehiclesMap = new Map(vehiclesData.map((v: any) => [v.id, v]));
-      const usersMap = new Map(usersData.map((u: any) => [u.id, u]));
-
-      const newEntries = entriesRaw.map(entry => {
-        const driverData = entry.driver_id ? driversMap.get(entry.driver_id) : null;
-        const vehicleData = entry.vehicle_id ? vehiclesMap.get(entry.vehicle_id) : null;
-        const userData = entry.registered_by ? usersMap.get(entry.registered_by) : null;
-
-        // Se tiver dados cacheados (novos registros), usa eles e evita busca
-        if (entry.cached_data) {
-          return {
-            ...entry,
-            registered_by_name: userData?.name || '---',
-            driver: { 
-              name: entry.cached_data.driver_name, 
-              document: entry.cached_data.driver_document,
-              photo_url: entry.cached_data.driver_photo_url || driverData?.photo_url
-            },
-            vehicle: { 
-              plate: entry.cached_data.vehicle_plate, 
-              brand: entry.cached_data.vehicle_brand, 
-              model: entry.cached_data.vehicle_model, 
-              color: entry.cached_data.vehicle_color 
+          // Função auxiliar para buscar documentos por ID em lotes de 10
+          const fetchDocsByIds = async (collectionName: string, ids: string[]) => {
+            if (ids.length === 0) return [];
+            const chunks = [];
+            for (let i = 0; i < ids.length; i += 10) {
+              chunks.push(ids.slice(i, i + 10));
             }
-          } as EntryWithDetails;
+            const snaps = await Promise.all(chunks.map(chunk => 
+              getDocs(query(collection(db, collectionName), where(documentId(), 'in', chunk)))
+            ));
+            return snaps.flatMap(snap => snap.docs.map(d => ({ id: d.id, ...d.data() })));
+          };
+
+          const [driversData, vehiclesData, usersData] = await Promise.all([
+            fetchDocsByIds(`tenants/${tenantId}/drivers`, driverIds),
+            fetchDocsByIds(`tenants/${tenantId}/vehicles`, vehicleIds),
+            fetchDocsByIds('profiles', userIds)
+          ]);
+
+          const driversMap = new Map(driversData.map((d: any) => [d.id, d]));
+          const vehiclesMap = new Map(vehiclesData.map((v: any) => [v.id, v]));
+          const usersMap = new Map(usersData.map((u: any) => [u.id, u]));
+
+          const newEntries = entriesRaw.map(entry => {
+            const driverData = entry.driver_id ? driversMap.get(entry.driver_id) : null;
+            const vehicleData = entry.vehicle_id ? vehiclesMap.get(entry.vehicle_id) : null;
+            const userData = entry.registered_by ? usersMap.get(entry.registered_by) : null;
+
+            if (entry.cached_data) {
+              return {
+                ...entry,
+                registered_by_name: userData?.name || '---',
+                driver: { 
+                  name: entry.cached_data.driver_name, 
+                  document: entry.cached_data.driver_document,
+                  photo_url: entry.cached_data.driver_photo_url || driverData?.photo_url
+                },
+                vehicle: { 
+                  plate: entry.cached_data.vehicle_plate, 
+                  brand: entry.cached_data.vehicle_brand, 
+                  model: entry.cached_data.vehicle_model, 
+                  color: entry.cached_data.vehicle_color 
+                }
+              } as EntryWithDetails;
+            }
+
+            return {
+              ...entry,
+              registered_by_name: userData?.name || '---',
+              driver: driverData || { name: 'Desconhecido', document: '---' },
+              vehicle: vehicleData || { plate: '---', brand: '', model: '', color: '' }
+            } as EntryWithDetails;
+          });
+
+          setEntries(newEntries);
+        } catch (err: any) {
+          console.error('Erro ao processar snapshot:', err);
+          setError('Erro ao atualizar registros em tempo real.');
+        } finally {
+          setLoading(false);
+          setLoadingMore(false);
         }
-
-        // Fallback para registros antigos
-        return {
-          ...entry,
-          registered_by_name: userData?.name || '---',
-          driver: driverData || { name: 'Desconhecido', document: '---' },
-          vehicle: vehicleData || { plate: '---', brand: '', model: '', color: '' }
-        } as EntryWithDetails;
+      }, (err) => {
+        console.error("Erro no listener de entradas:", err);
+        setError("Erro de conexão com o banco de dados.");
+        setLoading(false);
       });
+    };
 
-      if (isInitial) {
-        setEntries(newEntries);
-      } else {
-        setEntries(prev => [...prev, ...newEntries]);
-      }
+    fetchEntries();
 
-    } catch (err: any) {
-      console.error('Erro ao carregar registros:', err);
-      if (err.code === 'failed-precondition') {
-        setError('Índice do Firestore ausente. Verifique o console (F12) e clique no link fornecido pelo Firebase para criar o índice.');
-      } else {
-        setError('Não foi possível carregar os registros.');
-      }
-    } finally {
-      setLoading(false);
-      setLoadingMore(false);
-    }
-  };
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [tenantId, limitCount]);
 
   const toggleGroup = (date: string) => {
     setCollapsedGroups(prev => {
@@ -503,7 +483,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
       {hasMore && (
         <div className="mt-8 text-center">
           <button
-            onClick={() => loadEntries(false)}
+            onClick={() => setLimitCount(prev => prev + ITEMS_PER_PAGE)}
             disabled={loadingMore}
             className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-blue-700 bg-blue-100 hover:bg-blue-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
           >

@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { db } from './firebase';
-import { collection, getDocs, query, where, orderBy, limit, doc, getDoc } from 'firebase/firestore';
+import { collection, getDocs, query, where, orderBy, limit, doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { BarChart3, Clock, Truck, Users, ArrowDownRight, Activity, Calendar, Building2, MapPin, AlertTriangle } from 'lucide-react';
+import { BarChart3, Clock, Truck, Users, ArrowDownRight, Activity, Calendar, Building2, AlertTriangle, Timer } from 'lucide-react';
 
 interface DashboardMetrics {
   vehiclesInside: number;
@@ -18,6 +18,12 @@ interface TopDriver {
   name: string;
   count: number;
 }
+
+type AllData = {
+  entries: Record<string, any[]>;
+  occurrences: Record<string, any[]>;
+  driverCounts: Record<string, number>;
+};
 
 export default function Indicators({ tenantId: propTenantId }: { tenantId?: string }) {
   const { user, userProfile } = useAuth();
@@ -35,10 +41,18 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
   const [hourlyDistribution, setHourlyDistribution] = useState<number[]>(new Array(24).fill(0));
   const [occurrencesHourlyDistribution, setOccurrencesHourlyDistribution] = useState<number[]>(new Array(24).fill(0));
   const [topDrivers, setTopDrivers] = useState<TopDriver[]>([]);
-  const [tenants, setTenants] = useState<{id: string, name: string, address?: string}[]>([]);
+  const [tenants, setTenants] = useState<{id: string, name: string, address?: string, lat?: string, lon?: string, geocoded?: boolean}[]>([]);
   const [selectedTenantId, setSelectedTenantId] = useState<string>('');
   const [companyStats, setCompanyStats] = useState<{name: string, count: number, occurrencesCount: number}[]>([]);
   const [error, setError] = useState<any>(null);
+  const [allData, setAllData] = useState<AllData>({ entries: {}, occurrences: {}, driverCounts: {} });
+  const [durationStats, setDurationStats] = useState({
+    under1h: 0,
+    under4h: 0,
+    over4h: 0,
+    delayedVehicles: [] as any[],
+    total: 1
+  });
 
   const activeTenantId = selectedTenantId || propTenantId || (userProfile as any)?.tenantId || user?.uid;
 
@@ -78,7 +92,6 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
           }
         }
 
-        // Fallback
         if (list.length === 0 && (userProfile as any)?.tenantId) {
            const tId = (userProfile as any).tenantId;
            const docSnap = await getDoc(doc(db, 'tenants', tId));
@@ -91,14 +104,14 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
            }
         }
 
-        // Remove duplicates
         list = list.filter((v, i, a) => a.findIndex(t => t.id === v.id) === i);
         
         setTenants(list);
 
-        // Se houver mais de uma empresa, seleciona "Todas" por padrão para visualização agregada
         if (list.length > 1) {
            setSelectedTenantId('all');
+        } else if (list.length === 1) {
+           setSelectedTenantId(list[0].id);
         }
       } catch (error) {
         console.error("Erro ao buscar empresas:", error);
@@ -108,17 +121,58 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
     fetchTenants();
   }, [user, userProfile]);
 
-  const loadCompanyStats = useCallback(async () => {
-    if (tenants.length <= 1) return;
-    if (tenants.length === 0) return;
+  // Geocodificação de endereços (Gera Lat/Lon)
+  useEffect(() => {
+    const geocodeTenants = async () => {
+      const needsGeocoding = tenants.some(t => t.address && !t.geocoded);
+      if (!needsGeocoding) return;
+
+      const updatedTenants = [...tenants];
+      let changed = false;
+
+      for (let i = 0; i < updatedTenants.length; i++) {
+        const t = updatedTenants[i];
+        if (t.address && !t.geocoded) {
+           try {
+             // Delay para respeitar limite da API (1 req/s)
+             if (i > 0) await new Promise(r => setTimeout(r, 1100));
+             
+             const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(t.address)}&limit=1`);
+             const data = await res.json();
+             
+             if (data && data.length > 0) {
+                updatedTenants[i] = { ...t, geocoded: true, lat: data[0].lat, lon: data[0].lon };
+                changed = true;
+             } else {
+                updatedTenants[i] = { ...t, geocoded: true }; // Marca como processado mesmo se não achar
+                changed = true;
+             }
+           } catch (e) {
+             console.error("Erro ao geocodificar:", e);
+           }
+        }
+      }
+      
+      if (changed) setTenants(updatedTenants);
+    };
+
+    geocodeTenants();
+  }, [tenants]);
+
+  // Effect for setting up listeners
+  useEffect(() => {
+    if (!activeTenantId || !user) return;
+
+    setLoading(true);
+    setError(null);
+    setAllData({ entries: {}, occurrences: {}, driverCounts: {} }); // Reset data
 
     const startDate = new Date();
     startDate.setHours(0, 0, 0, 0);
     let endDate: Date | null = null;
 
-    if (dateRange === 'today') {
-      // startDate já é hoje 00:00
-    } else if (dateRange === 'thisWeek') {
+    if (dateRange === 'today') {} 
+    else if (dateRange === 'thisWeek') {
       const day = startDate.getDay();
       startDate.setDate(startDate.getDate() - day);
     } else if (dateRange === 'lastWeek') {
@@ -134,264 +188,179 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
       startDate.setDate(1);
     }
 
-    const promises = tenants.map(async (t) => {
-      let queryConstraints = [where('entry_time', '>=', startDate.toISOString())];
-      let occurrenceConstraints = [where('created_at', '>=', startDate.toISOString())];
+    let targetIds: string[] = [];
+    if (activeTenantId === 'all') {
+      targetIds = tenants.map(t => t.id);
+    } else {
+      targetIds = [activeTenantId];
+    }
+
+    if (targetIds.length === 0) {
+      setLoading(false);
+      return;
+    }
+
+    const unsubscribes = targetIds.flatMap(tid => {
+      let entryQueryConstraints = [where('entry_time', '>=', startDate.toISOString()), orderBy('entry_time', 'desc'), limit(2000)];
+      let occurrenceQueryConstraints = [where('created_at', '>=', startDate.toISOString()), orderBy('created_at', 'desc')];
 
       if (endDate) {
-        queryConstraints.push(where('entry_time', '<', endDate.toISOString()));
-        occurrenceConstraints.push(where('created_at', '<', endDate.toISOString()));
+        entryQueryConstraints = [where('entry_time', '>=', startDate.toISOString()), where('entry_time', '<', endDate.toISOString()), orderBy('entry_time', 'desc'), limit(2000)];
+        occurrenceQueryConstraints = [where('created_at', '>=', startDate.toISOString()), where('created_at', '<', endDate.toISOString()), orderBy('created_at', 'desc')];
       }
-      
-      const q = query(collection(db, 'tenants', t.id, 'entries'), ...queryConstraints);
-      const qOcc = query(collection(db, 'tenants', t.id, 'occurrences'), ...occurrenceConstraints);
-      
-      const [snapshot, snapshotOcc] = await Promise.all([
-        getDocs(q),
-        getDocs(qOcc)
-      ]);
-      return { name: t.name, count: snapshot.size, occurrencesCount: snapshotOcc.size };
+
+      const entriesQuery = query(collection(db, 'tenants', tid, 'entries'), ...entryQueryConstraints);
+      const occurrencesQuery = query(collection(db, 'tenants', tid, 'occurrences'), ...occurrenceQueryConstraints);
+      const driversQuery = query(collection(db, 'tenants', tid, 'drivers'));
+
+      const entriesUnsub = onSnapshot(entriesQuery, 
+        (snapshot) => setAllData(prev => ({ ...prev, entries: { ...prev.entries, [tid]: snapshot.docs.map(d => d.data()) } })),
+        (err) => { console.error(`Error on entries listener for ${tid}:`, err); setError("Erro ao carregar dados de entrada."); }
+      );
+      const occurrencesUnsub = onSnapshot(occurrencesQuery, 
+        (snapshot) => setAllData(prev => ({ ...prev, occurrences: { ...prev.occurrences, [tid]: snapshot.docs.map(d => d.data()) } })),
+        (err) => { console.error(`Error on occurrences listener for ${tid}:`, err); setError("Erro ao carregar dados de ocorrências."); }
+      );
+      const driversUnsub = onSnapshot(driversQuery, 
+        (snapshot) => setAllData(prev => ({ ...prev, driverCounts: { ...prev.driverCounts, [tid]: snapshot.size } })),
+        (err) => { console.error(`Error on drivers listener for ${tid}:`, err); setError("Erro ao carregar dados de motoristas."); }
+      );
+
+      return [entriesUnsub, occurrencesUnsub, driversUnsub];
     });
 
-    const results = await Promise.all(promises);
-    setCompanyStats(results.sort((a, b) => b.count - a.count));
-  }, [tenants, dateRange]);
+    return () => {
+      unsubscribes.forEach(unsub => unsub());
+    };
+  }, [activeTenantId, dateRange, tenants, user]);
 
-  const loadIndicators = useCallback(async (currentTenantId: string) => {
-    try {
-      setLoading(true);
-      setError(null);
-      
-      let targetIds: string[] = [];
-      
-      if (currentTenantId === 'all') {
-        if (tenants.length === 0) {
-           setLoading(false);
-           return;
-        }
-        targetIds = tenants.map(t => t.id);
-      } else if (currentTenantId) {
-        targetIds = [currentTenantId];
-      } else {
-        return;
-      }
-
-      // 1. Buscar Entradas (Filtro de Data)
-      const startDate = new Date();
-      startDate.setHours(0, 0, 0, 0);
-      let endDate: Date | null = null;
-
-      if (dateRange === 'today') {
-        // startDate já é hoje 00:00
-      } else if (dateRange === 'thisWeek') {
-        // Início desta semana (Domingo)
-        const day = startDate.getDay();
-        startDate.setDate(startDate.getDate() - day);
-      } else if (dateRange === 'lastWeek') {
-        // Semana passada (Domingo anterior até Sábado anterior)
-        const day = startDate.getDay();
-        startDate.setDate(startDate.getDate() - day - 7);
-        
-        endDate = new Date(startDate);
-        endDate.setDate(startDate.getDate() + 7);
-      } else if (dateRange === '7d') {
-        startDate.setDate(startDate.getDate() - 7);
-      } else if (dateRange === '30d') {
-        startDate.setDate(startDate.getDate() - 30);
-      } else if (dateRange === 'thisMonth') {
-        startDate.setDate(1);
-      }
-
-      // Construção da Query
-      let queryConstraints = [
-        where('entry_time', '>=', startDate.toISOString()),
-        orderBy('entry_time', 'desc'),
-        limit(2000)
-      ];
-
-      let occurrenceConstraints = [
-        where('created_at', '>=', startDate.toISOString()),
-        orderBy('created_at', 'desc')
-      ];
-
-      if (endDate) {
-        // Adiciona filtro de data final se existir (para Semana Passada)
-        queryConstraints = [
-          where('entry_time', '>=', startDate.toISOString()),
-          where('entry_time', '<', endDate.toISOString()),
-          orderBy('entry_time', 'desc'),
-          limit(2000)
-        ];
-
-        occurrenceConstraints = [
-          where('created_at', '>=', startDate.toISOString()),
-          where('created_at', '<', endDate.toISOString()),
-          orderBy('created_at', 'desc')
-        ];
-      }
-
-      const fetchTenantData = async (tid: string) => {
-        const entriesQuery = query(
-          collection(db, 'tenants', tid, 'entries'),
-          ...queryConstraints
-        );
-        const driversQuery = query(
-          collection(db, 'tenants', tid, 'drivers')
-        );
-        const occurrencesQuery = query(
-          collection(db, 'tenants', tid, 'occurrences'),
-          ...occurrenceConstraints
-        );
-        const [entriesSnap, driversSnap, occurrencesSnap] = await Promise.all([
-          getDocs(entriesQuery),
-          getDocs(driversQuery),
-          getDocs(occurrencesQuery)
-        ]);
-        return {
-          entries: entriesSnap.docs.map(doc => doc.data()),
-          driverCount: driversSnap.size,
-          occurrences: occurrencesSnap.docs.map(doc => doc.data())
-        };
-      };
-
-      // Processamento dos Dados
-      const results = await Promise.all(targetIds.map(tid => fetchTenantData(tid)));
-      const entries = results.flatMap(r => r.entries);
-      const occurrences = results.flatMap(r => r.occurrences);
-      const totalDrivers = results.reduce((acc, r) => acc + r.driverCount, 0);
-
-      const now = new Date();
-      const todayStart = new Date(now.setHours(0, 0, 0, 0)).toISOString();
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-
-      let insideCount = 0;
-      let todayCount = 0;
-      let monthCount = 0;
-      let totalDurationMinutes = 0;
-      let completedVisits = 0;
-      const hoursCount = new Array(24).fill(0);
-      const occurrencesHoursCount = new Array(24).fill(0);
-      const driverCounts: Record<string, number> = {};
-
-      entries.forEach((entry: any) => {
-        // Veículos no Pátio (sem data de saída)
-        if (!entry.exit_time) {
-          insideCount++;
-        } else {
-          // Cálculo de duração para visitas concluídas
-          const start = new Date(entry.entry_time).getTime();
-          const end = new Date(entry.exit_time).getTime();
-          const duration = (end - start) / (1000 * 60); // em minutos
-          if (duration > 0 && duration < 1440) { // Ignora erros de datas absurdas (> 24h)
-            totalDurationMinutes += duration;
-            completedVisits++;
-          }
-        }
-
-        // Contagens temporais
-        if (entry.entry_time >= todayStart) todayCount++;
-        if (entry.entry_time >= monthStart) monthCount++;
-
-        // Distribuição por hora
-        const hour = new Date(entry.entry_time).getHours();
-        hoursCount[hour]++;
-
-        // Top Motoristas
-        const driverName = entry.cached_data?.driver_name;
-        if (driverName) {
-          driverCounts[driverName] = (driverCounts[driverName] || 0) + 1;
-        }
-      });
-
-      // Processar Ocorrências por hora
-      occurrences.forEach((occ: any) => {
-        const hour = new Date(occ.created_at).getHours();
-        occurrencesHoursCount[hour]++;
-      });
-
-      // Encontrar hora de pico
-      const maxHourCount = Math.max(...hoursCount);
-      const busiestHourIndex = hoursCount.indexOf(maxHourCount);
-
-      // Processar Top 5 Motoristas
-      const sortedDrivers = Object.entries(driverCounts)
-        .map(([name, count]) => ({ name, count }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 5);
-
-      setMetrics({
-        vehiclesInside: insideCount,
-        entriesToday: todayCount,
-        entriesThisMonth: monthCount,
-        avgStayDurationMinutes: completedVisits > 0 ? Math.round(totalDurationMinutes / completedVisits) : 0,
-        busiestHour: busiestHourIndex,
-        totalDrivers: totalDrivers,
-        totalOccurrences: occurrences.length
-      });
-
-      setHourlyDistribution(hoursCount);
-      setOccurrencesHourlyDistribution(occurrencesHoursCount);
-      setTopDrivers(sortedDrivers);
-
-    } catch (err) {
-      console.error("Erro ao calcular indicadores:", err);
-      // @ts-ignore
-      if (err.code === 'failed-precondition') {
-        const message = (err as any).message || '';
-        const match = message.match(/https:\/\/console\.firebase\.google\.com[^\s]*/);
-        const link = match ? match[0] : null;
-        
-        if (link) {
-          setError(<span>Configuração necessária: <a href={link} target="_blank" rel="noopener noreferrer" className="underline font-bold">Clique aqui para criar o índice</a>.</span>);
-        } else {
-          setError("Configuração necessária: É preciso criar um índice no Firestore para visualizar estes dados. Verifique o console do navegador para o link de criação.");
-        }
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [dateRange, tenants]);
-
+  // Effect for calculations
   useEffect(() => {
-    if ((user || userProfile) && activeTenantId) {
-      loadIndicators(activeTenantId);
-    } else {
-      // Se não houver perfil, paramos o estado de carregamento para mostrar a mensagem.
-      if (!activeTenantId) setLoading(false);
-    }
-  }, [user, userProfile, loadIndicators, activeTenantId]);
+    const targetIds = activeTenantId === 'all' ? tenants.map(t => t.id) : [activeTenantId];
+    const allEntriesLoaded = targetIds.every(tid => allData.entries[tid] !== undefined);
+    const allOccurrencesLoaded = targetIds.every(tid => allData.occurrences[tid] !== undefined);
+    const allDriversLoaded = targetIds.every(tid => allData.driverCounts[tid] !== undefined);
 
-  useEffect(() => {
-    if (tenants.length > 1) {
-      loadCompanyStats();
+    if (!allEntriesLoaded || !allOccurrencesLoaded || !allDriversLoaded || targetIds.length === 0) {
+      return;
     }
-  }, [tenants.length, loadCompanyStats]);
 
-  const getMapUrl = () => {
-    const baseUrl = "https://maps.google.com/maps";
+    const entries = Object.values(allData.entries).flat();
+    const occurrences = Object.values(allData.occurrences).flat();
+    const totalDrivers = Object.values(allData.driverCounts).reduce((sum, count) => sum + count, 0);
+
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+
+    let insideCount = 0;
+    let todayCount = 0;
+    let monthCount = 0;
+    let totalDurationMinutes = 0;
+    let completedVisits = 0;
+    const hoursCount = new Array(24).fill(0);
+    const occurrencesHoursCount = new Array(24).fill(0);
+    const driverCounts: Record<string, number> = {};
     
-    if (activeTenantId === 'all') {
-      const validTenants = tenants.filter(t => t.address && t.address.trim() !== '');
-      
-      if (validTenants.length === 0) {
-        return `${baseUrl}?q=Brasil&t=&z=4&ie=UTF8&iwloc=B&output=embed`;
+    // Stats de Duração
+    let dUnder1h = 0;
+    let dUnder4h = 0;
+    let dOver4h = 0;
+    const delayed: any[] = [];
+
+    entries.forEach((entry: any) => {
+      if (!entry.exit_time) {
+        insideCount++;
+      } else {
+        const start = new Date(entry.entry_time).getTime();
+        const end = new Date(entry.exit_time).getTime();
+        const duration = (end - start) / (1000 * 60);
+        if (duration > 0 && duration < 1440) {
+          totalDurationMinutes += duration;
+          completedVisits++;
+        }
       }
       
-      if (validTenants.length === 1) {
-        return `${baseUrl}?q=${encodeURIComponent(validTenants[0].address!)}&t=&z=14&ie=UTF8&iwloc=B&output=embed`;
+      // Cálculo de Duração para Estatísticas
+      const start = new Date(entry.entry_time).getTime();
+      const end = entry.exit_time ? new Date(entry.exit_time).getTime() : new Date().getTime();
+      const durationMinutes = (end - start) / (1000 * 60);
+
+      if (durationMinutes < 60) dUnder1h++;
+      else if (durationMinutes < 240) dUnder4h++;
+      else dOver4h++;
+
+      // Identificar veículos com longa permanência (> 24h) ainda no pátio
+      if (!entry.exit_time && durationMinutes > 24 * 60) {
+         delayed.push({
+             id: entry.id,
+             plate: entry.cached_data?.vehicle_plate || '---',
+             model: entry.cached_data?.vehicle_model || 'Veículo',
+             entryTime: entry.entry_time,
+             hours: Math.floor(durationMinutes / 60)
+         });
       }
-      
-      // Mostra apenas o primeiro endereço para evitar traçar rota entre eles
-      return `${baseUrl}?q=${encodeURIComponent(validTenants[0].address!)}&t=&z=14&ie=UTF8&iwloc=B&output=embed`;
+
+      if (entry.entry_time >= todayStart) todayCount++;
+      if (entry.entry_time >= monthStart) monthCount++;
+
+      const hour = new Date(entry.entry_time).getHours();
+      hoursCount[hour]++;
+
+      const driverName = entry.cached_data?.driver_name;
+      if (driverName) {
+        driverCounts[driverName] = (driverCounts[driverName] || 0) + 1;
+      }
+    });
+
+    occurrences.forEach((occ: any) => {
+      const hour = new Date(occ.created_at).getHours();
+      occurrencesHoursCount[hour]++;
+    });
+
+    const maxHourCount = Math.max(...hoursCount);
+    const busiestHourIndex = hoursCount.indexOf(maxHourCount);
+
+    const sortedDrivers = Object.entries(driverCounts)
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+
+    setMetrics({
+      vehiclesInside: insideCount,
+      entriesToday: todayCount,
+      entriesThisMonth: monthCount,
+      avgStayDurationMinutes: completedVisits > 0 ? Math.round(totalDurationMinutes / completedVisits) : 0,
+      busiestHour: busiestHourIndex,
+      totalDrivers: totalDrivers,
+      totalOccurrences: occurrences.length
+    });
+
+    setHourlyDistribution(hoursCount);
+    setOccurrencesHourlyDistribution(occurrencesHoursCount);
+    setTopDrivers(sortedDrivers);
+    setDurationStats({ 
+        under1h: dUnder1h, 
+        under4h: dUnder4h, 
+        over4h: dOver4h, 
+        delayedVehicles: delayed,
+        total: entries.length || 1
+    });
+    
+    // Company Stats
+    if (tenants.length > 1) {
+        const stats = tenants.map(t => ({
+            name: t.name,
+            count: allData.entries[t.id]?.length || 0,
+            occurrencesCount: allData.occurrences[t.id]?.length || 0
+        })).sort((a, b) => b.count - a.count);
+        setCompanyStats(stats);
     }
 
-    const tenant = tenants.find(t => t.id === activeTenantId);
-    const address = tenant?.address || 'Brasil';
-    const zoom = tenant?.address ? '14' : '4';
-    return `${baseUrl}?q=${encodeURIComponent(address)}&t=&z=${zoom}&ie=UTF8&iwloc=B&output=embed`;
-  };
+    setLoading(false);
+  }, [allData, activeTenantId, tenants]);
 
-  if (!user && !userProfile) {
+  if (!user && !userProfile && !loading) {
     return (
       <div className="text-center py-12">
         <h3 className="text-lg font-semibold text-gray-700">Perfil de usuário não encontrado</h3>
@@ -732,7 +701,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                     <div key={stat.name} className="flex-1 flex flex-col items-center justify-end h-full group">
                       <div className="flex items-end justify-center gap-1 w-full h-full">
                            <div className="flex flex-col items-center justify-end h-full w-1/2 group/bar">
-                               <span className="mb-1 text-[10px] font-bold text-blue-600 opacity-0 group-hover/bar:opacity-100 transition-opacity">{stat.count}</span>
+                               <span className="mb-1 text-[10px] font-bold text-blue-600">{stat.count > 0 ? stat.count : ''}</span>
                                <div 
                                  className="w-full bg-blue-600 rounded-t-sm transition-all duration-500 hover:bg-blue-700 relative" 
                                  style={{ height: `${(stat.count / max) * 100}%` }}
@@ -740,7 +709,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                                ></div>
                            </div>
                            <div className="flex flex-col items-center justify-end h-full w-1/2 group/bar">
-                               <span className="mb-1 text-[10px] font-bold text-red-600 opacity-0 group-hover/bar:opacity-100 transition-opacity">{stat.occurrencesCount}</span>
+                               <span className="mb-1 text-[10px] font-bold text-red-600">{stat.occurrencesCount > 0 ? stat.occurrencesCount : ''}</span>
                                <div 
                                  className="w-full bg-red-500 rounded-t-sm transition-all duration-500 hover:bg-red-600 relative" 
                                  style={{ height: `${(stat.occurrencesCount / max) * 100}%` }}
@@ -759,48 +728,76 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
           )}
         </div>
 
-        {/* Coluna Lateral (Direita) - Mapa */}
+        {/* Coluna Lateral (Direita) - Análise de Permanência */}
         <div className="xl:col-span-3">
           <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm h-full flex flex-col">
              <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
-               <MapPin className="w-5 h-5 text-gray-500" /> Localização
+               <Timer className="w-5 h-5 text-gray-500" /> Tempos de Permanência
              </h3>
              
-             <div className="flex-1 bg-gray-100 rounded-lg mb-4 overflow-hidden relative min-h-[300px]">
-                <iframe 
-                  width="100%" 
-                  height="100%" 
-                  frameBorder="0" 
-                  scrolling="no" 
-                  marginHeight={0} 
-                  marginWidth={0} 
-                  src={getMapUrl()}
-                  className="absolute inset-0"
-                  title="Mapa de Localização"
-                ></iframe>
-             </div>
+             <div className="space-y-6 flex-1">
+                {/* Distribution Bars */}
+                <div className="space-y-4">
+                    <div>
+                        <div className="flex justify-between text-sm mb-1">
+                            <span className="text-gray-600">Curta Duração (&lt; 1h)</span>
+                            <span className="font-bold text-gray-900">{durationStats.under1h}</span>
+                        </div>
+                        <div className="w-full bg-gray-100 rounded-full h-2">
+                            <div className="bg-green-500 h-2 rounded-full" style={{ width: `${(durationStats.under1h / durationStats.total) * 100}%` }}></div>
+                        </div>
+                    </div>
+                    <div>
+                        <div className="flex justify-between text-sm mb-1">
+                            <span className="text-gray-600">Média Duração (1h - 4h)</span>
+                            <span className="font-bold text-gray-900">{durationStats.under4h}</span>
+                        </div>
+                        <div className="w-full bg-gray-100 rounded-full h-2">
+                            <div className="bg-blue-500 h-2 rounded-full" style={{ width: `${(durationStats.under4h / durationStats.total) * 100}%` }}></div>
+                        </div>
+                    </div>
+                    <div>
+                        <div className="flex justify-between text-sm mb-1">
+                            <span className="text-gray-600">Longa Duração (&gt; 4h)</span>
+                            <span className="font-bold text-gray-900">{durationStats.over4h}</span>
+                        </div>
+                        <div className="w-full bg-gray-100 rounded-full h-2">
+                            <div className="bg-orange-500 h-2 rounded-full" style={{ width: `${(durationStats.over4h / durationStats.total) * 100}%` }}></div>
+                        </div>
+                    </div>
+                </div>
 
-             <div className="space-y-3 overflow-y-auto max-h-[400px]">
-               {tenants.map(t => (
-                 <button 
-                   key={t.id} 
-                   onClick={() => setSelectedTenantId(t.id)}
-                   className={`w-full text-left p-3 rounded-lg text-sm border transition-all ${
-                   t.id === activeTenantId ? 'bg-blue-50 border-blue-200 shadow-sm ring-1 ring-blue-200' : 'bg-gray-50 border-transparent hover:bg-gray-100'
-                 }`}>
-                   <div className="flex justify-between items-start">
-                      <p className={`font-medium ${t.id === activeTenantId ? 'text-blue-700' : 'text-gray-800'}`}>{t.name}</p>
-                      {t.id === activeTenantId && <div className="w-2 h-2 bg-blue-500 rounded-full mt-1.5"></div>}
-                   </div>
-                   <p className="text-gray-500 text-xs mt-1 flex items-start gap-1">
-                     <MapPin className="w-3 h-3 shrink-0 mt-0.5" />
-                     <span className="truncate">{t.address || 'Endereço não cadastrado'}</span>
-                   </p>
-                 </button>
-               ))}
-               {tenants.length === 0 && (
-                 <p className="text-gray-400 text-center text-sm py-4">Nenhuma empresa encontrada.</p>
-               )}
+                {/* Critical Alerts */}
+                <div className="mt-8 border-t border-gray-100 pt-6">
+                    <h4 className="text-sm font-bold text-gray-800 mb-3 flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4 text-red-500" /> Veículos em Pátio &gt; 24h
+                    </h4>
+                    
+                    <div className="space-y-3 overflow-y-auto max-h-[300px] pr-1 custom-scrollbar">
+                        {durationStats.delayedVehicles.length > 0 ? (
+                            durationStats.delayedVehicles.map((v, idx) => (
+                                <div key={idx} className="bg-red-50 border border-red-100 p-3 rounded-lg">
+                                    <div className="flex justify-between items-start">
+                                        <div>
+                                            <p className="font-bold text-red-900">{v.plate}</p>
+                                            <p className="text-xs text-red-700">{v.model}</p>
+                                        </div>
+                                        <span className="bg-white text-red-600 text-xs font-bold px-2 py-1 rounded border border-red-100">
+                                            {v.hours}h
+                                        </span>
+                                    </div>
+                                    <p className="text-[10px] text-red-500 mt-2">
+                                        Entrada: {new Date(v.entryTime).toLocaleDateString('pt-BR')} {new Date(v.entryTime).toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit'})}
+                                    </p>
+                                </div>
+                            ))
+                        ) : (
+                            <div className="text-center py-6 bg-gray-50 rounded-lg border border-gray-100 border-dashed">
+                                <p className="text-sm text-gray-500">Nenhum veículo excedendo 24h.</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
              </div>
           </div>
         </div>
