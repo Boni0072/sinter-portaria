@@ -530,7 +530,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
           <img
             src={selectedImage}
             alt="Evidência"
-            className="w-full h-full object-contain shadow-2xl animate-in zoom-in-95 duration-200"
+            className="w-full h-full object-contain shadow-2xl animate-in zoom-in-95 duration-200 bg-white rounded-lg"
             onClick={(e) => e.stopPropagation()}
           />
           <button 

@@ -259,17 +259,17 @@ export default function DriversList() {
 
       {zoomedImage && (
         <div 
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 backdrop-blur-sm animate-in fade-in duration-200 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-white/95 backdrop-blur-sm animate-in fade-in duration-200 p-4"
           onClick={() => setZoomedImage(null)}
         >
           <img 
             src={zoomedImage} 
             alt="Zoom" 
-            className="w-full h-full object-contain shadow-2xl animate-in zoom-in-95 duration-200"
+            className="max-w-full max-h-full object-contain shadow-2xl animate-in zoom-in-95 duration-200 rounded-lg"
             onClick={(e) => e.stopPropagation()}
           />
           <button 
-            className="absolute top-4 right-4 z-50 text-white/70 hover:text-white transition-colors p-2 bg-black/20 rounded-full hover:bg-black/40"
+            className="absolute top-4 right-4 z-50 text-gray-500 hover:text-gray-700 transition-colors p-2 bg-gray-100 rounded-full hover:bg-gray-200"
             onClick={() => setZoomedImage(null)}
           >
             <X className="w-8 h-8" />
