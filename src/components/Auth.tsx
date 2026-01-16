@@ -111,7 +111,7 @@ export default function Auth() {
             className="text-blue-600 hover:text-blue-700 text-sm font-medium"
           >
             {isLogin
-              ? 'Não tem conta? Cadastre-se'
+              ? ''
               : 'Já tem conta? Entre'}
           </button>
         </div>
