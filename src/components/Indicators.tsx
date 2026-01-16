@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { db } from './firebase';
 import { collection, getDocs, query, where, orderBy, limit, doc, getDoc } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { BarChart3, Clock, Truck, Users, ArrowDownRight, Activity, Calendar, Building2, MapPin } from 'lucide-react';
+import { BarChart3, Clock, Truck, Users, ArrowDownRight, Activity, Calendar, Building2, MapPin, AlertTriangle } from 'lucide-react';
 
 interface DashboardMetrics {
   vehiclesInside: number;
@@ -11,6 +11,7 @@ interface DashboardMetrics {
   avgStayDurationMinutes: number;
   busiestHour: number;
   totalDrivers: number;
+  totalOccurrences: number;
 }
 
 interface TopDriver {
@@ -28,13 +29,15 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
     entriesThisMonth: 0,
     avgStayDurationMinutes: 0,
     busiestHour: 0,
-    totalDrivers: 0
+    totalDrivers: 0,
+    totalOccurrences: 0
   });
   const [hourlyDistribution, setHourlyDistribution] = useState<number[]>(new Array(24).fill(0));
+  const [occurrencesHourlyDistribution, setOccurrencesHourlyDistribution] = useState<number[]>(new Array(24).fill(0));
   const [topDrivers, setTopDrivers] = useState<TopDriver[]>([]);
   const [tenants, setTenants] = useState<{id: string, name: string, address?: string}[]>([]);
   const [selectedTenantId, setSelectedTenantId] = useState<string>('');
-  const [companyStats, setCompanyStats] = useState<{name: string, count: number}[]>([]);
+  const [companyStats, setCompanyStats] = useState<{name: string, count: number, occurrencesCount: number}[]>([]);
   const [error, setError] = useState<any>(null);
 
   const activeTenantId = selectedTenantId || propTenantId || (userProfile as any)?.tenantId || user?.uid;
@@ -92,6 +95,11 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
         list = list.filter((v, i, a) => a.findIndex(t => t.id === v.id) === i);
         
         setTenants(list);
+
+        // Se houver mais de uma empresa, seleciona "Todas" por padrão para visualização agregada
+        if (list.length > 1) {
+           setSelectedTenantId('all');
+        }
       } catch (error) {
         console.error("Erro ao buscar empresas:", error);
       }
@@ -102,6 +110,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
 
   const loadCompanyStats = useCallback(async () => {
     if (tenants.length <= 1) return;
+    if (tenants.length === 0) return;
 
     const startDate = new Date();
     startDate.setHours(0, 0, 0, 0);
@@ -127,11 +136,21 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
 
     const promises = tenants.map(async (t) => {
       let queryConstraints = [where('entry_time', '>=', startDate.toISOString())];
-      if (endDate) queryConstraints.push(where('entry_time', '<', endDate.toISOString()));
+      let occurrenceConstraints = [where('created_at', '>=', startDate.toISOString())];
+
+      if (endDate) {
+        queryConstraints.push(where('entry_time', '<', endDate.toISOString()));
+        occurrenceConstraints.push(where('created_at', '<', endDate.toISOString()));
+      }
       
       const q = query(collection(db, 'tenants', t.id, 'entries'), ...queryConstraints);
-      const snapshot = await getDocs(q);
-      return { name: t.name, count: snapshot.size };
+      const qOcc = query(collection(db, 'tenants', t.id, 'occurrences'), ...occurrenceConstraints);
+      
+      const [snapshot, snapshotOcc] = await Promise.all([
+        getDocs(q),
+        getDocs(qOcc)
+      ]);
+      return { name: t.name, count: snapshot.size, occurrencesCount: snapshotOcc.size };
     });
 
     const results = await Promise.all(promises);
@@ -190,6 +209,11 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
         limit(2000)
       ];
 
+      let occurrenceConstraints = [
+        where('created_at', '>=', startDate.toISOString()),
+        orderBy('created_at', 'desc')
+      ];
+
       if (endDate) {
         // Adiciona filtro de data final se existir (para Semana Passada)
         queryConstraints = [
@@ -197,6 +221,12 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
           where('entry_time', '<', endDate.toISOString()),
           orderBy('entry_time', 'desc'),
           limit(2000)
+        ];
+
+        occurrenceConstraints = [
+          where('created_at', '>=', startDate.toISOString()),
+          where('created_at', '<', endDate.toISOString()),
+          orderBy('created_at', 'desc')
         ];
       }
 
@@ -208,19 +238,26 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
         const driversQuery = query(
           collection(db, 'tenants', tid, 'drivers')
         );
-        const [entriesSnap, driversSnap] = await Promise.all([
+        const occurrencesQuery = query(
+          collection(db, 'tenants', tid, 'occurrences'),
+          ...occurrenceConstraints
+        );
+        const [entriesSnap, driversSnap, occurrencesSnap] = await Promise.all([
           getDocs(entriesQuery),
-          getDocs(driversQuery)
+          getDocs(driversQuery),
+          getDocs(occurrencesQuery)
         ]);
         return {
           entries: entriesSnap.docs.map(doc => doc.data()),
-          driverCount: driversSnap.size
+          driverCount: driversSnap.size,
+          occurrences: occurrencesSnap.docs.map(doc => doc.data())
         };
       };
 
       // Processamento dos Dados
       const results = await Promise.all(targetIds.map(tid => fetchTenantData(tid)));
       const entries = results.flatMap(r => r.entries);
+      const occurrences = results.flatMap(r => r.occurrences);
       const totalDrivers = results.reduce((acc, r) => acc + r.driverCount, 0);
 
       const now = new Date();
@@ -233,6 +270,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
       let totalDurationMinutes = 0;
       let completedVisits = 0;
       const hoursCount = new Array(24).fill(0);
+      const occurrencesHoursCount = new Array(24).fill(0);
       const driverCounts: Record<string, number> = {};
 
       entries.forEach((entry: any) => {
@@ -265,6 +303,12 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
         }
       });
 
+      // Processar Ocorrências por hora
+      occurrences.forEach((occ: any) => {
+        const hour = new Date(occ.created_at).getHours();
+        occurrencesHoursCount[hour]++;
+      });
+
       // Encontrar hora de pico
       const maxHourCount = Math.max(...hoursCount);
       const busiestHourIndex = hoursCount.indexOf(maxHourCount);
@@ -281,10 +325,12 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
         entriesThisMonth: monthCount,
         avgStayDurationMinutes: completedVisits > 0 ? Math.round(totalDurationMinutes / completedVisits) : 0,
         busiestHour: busiestHourIndex,
-        totalDrivers: totalDrivers
+        totalDrivers: totalDrivers,
+        totalOccurrences: occurrences.length
       });
 
       setHourlyDistribution(hoursCount);
+      setOccurrencesHourlyDistribution(occurrencesHoursCount);
       setTopDrivers(sortedDrivers);
 
     } catch (err) {
@@ -320,6 +366,30 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
       loadCompanyStats();
     }
   }, [tenants.length, loadCompanyStats]);
+
+  const getMapUrl = () => {
+    const baseUrl = "https://maps.google.com/maps";
+    
+    if (activeTenantId === 'all') {
+      const validTenants = tenants.filter(t => t.address && t.address.trim() !== '');
+      
+      if (validTenants.length === 0) {
+        return `${baseUrl}?q=Brasil&t=&z=4&ie=UTF8&iwloc=B&output=embed`;
+      }
+      
+      if (validTenants.length === 1) {
+        return `${baseUrl}?q=${encodeURIComponent(validTenants[0].address!)}&t=&z=14&ie=UTF8&iwloc=B&output=embed`;
+      }
+      
+      // Mostra apenas o primeiro endereço para evitar traçar rota entre eles
+      return `${baseUrl}?q=${encodeURIComponent(validTenants[0].address!)}&t=&z=14&ie=UTF8&iwloc=B&output=embed`;
+    }
+
+    const tenant = tenants.find(t => t.id === activeTenantId);
+    const address = tenant?.address || 'Brasil';
+    const zoom = tenant?.address ? '14' : '4';
+    return `${baseUrl}?q=${encodeURIComponent(address)}&t=&z=${zoom}&ie=UTF8&iwloc=B&output=embed`;
+  };
 
   if (!user && !userProfile) {
     return (
@@ -399,7 +469,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
         {/* Coluna Principal (Esquerda) */}
         <div className="xl:col-span-9 space-y-6">
           {/* Cards Principais */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
             <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
               <div className="flex justify-between items-start">
                 <div>
@@ -451,6 +521,19 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
               </div>
               <div className="mt-4 text-xs text-gray-500">Cadastrados na base</div>
             </div>
+
+            <div className="bg-red-50 p-6 rounded-xl border border-red-100 shadow-sm">
+              <div className="flex justify-between items-start">
+                <div>
+                  <p className="text-sm font-medium text-red-900">Ocorrências</p>
+                  <h3 className="text-3xl font-bold text-red-700 mt-2">{metrics.totalOccurrences}</h3>
+                </div>
+                <div className="p-2 bg-white rounded-lg shadow-sm">
+                  <AlertTriangle className="w-6 h-6 text-red-600" />
+                </div>
+              </div>
+              <div className="mt-4 text-xs text-red-800">No período selecionado</div>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-10 gap-6">
@@ -468,7 +551,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
               
               <div className="relative h-64 w-full">
                 {(() => {
-                  const max = Math.max(...hourlyDistribution, 1);
+                  const max = Math.max(...hourlyDistribution, ...occurrencesHourlyDistribution, 1);
                   const width = 1000;
                   const height = 250;
                   const paddingX = 40;
@@ -478,6 +561,12 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                   
                   const dataPoints = hourlyDistribution.map((count, index) => {
                     const x = paddingX + (index / (hourlyDistribution.length - 1)) * (chartWidth - 20);
+                    const y = height - paddingY - (count / max) * chartHeight;
+                    return { x, y, count, index };
+                  });
+
+                  const occurrencePoints = occurrencesHourlyDistribution.map((count, index) => {
+                    const x = paddingX + (index / (occurrencesHourlyDistribution.length - 1)) * (chartWidth - 20);
                     const y = height - paddingY - (count / max) * chartHeight;
                     return { x, y, count, index };
                   });
@@ -500,6 +589,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                   };
 
                   const pathD = smoothPath(dataPoints);
+                  const occurrencePathD = smoothPath(occurrencePoints);
 
                   return (
                     <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-full overflow-visible" preserveAspectRatio="none">
@@ -516,7 +606,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                         );
                       })}
 
-                      {/* Line Path */}
+                      {/* Line Path Entries */}
                       <path
                         d={pathD}
                         fill="none"
@@ -527,7 +617,18 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                         className="drop-shadow-md"
                       />
 
-                      {/* Data Points and Labels */}
+                      {/* Line Path Occurrences */}
+                      <path
+                        d={occurrencePathD}
+                        fill="none"
+                    stroke="#ef4444"
+                        strokeWidth="3"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="drop-shadow-md"
+                      />
+
+                      {/* Data Points and Labels Entries */}
                       {dataPoints.map((point, i) => {
                         return (
                           <g key={i} className="group">
@@ -543,12 +644,37 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                           </g>
                         );
                       })}
+
+                      {/* Data Points and Labels Occurrences */}
+                      {occurrencePoints.map((point, i) => {
+                        return (
+                          <g key={`occ-${i}`} className="group">
+                        <circle cx={point.x} cy={point.y} r={point.count > 0 ? 4 : 0} fill="white" stroke="#ef4444" strokeWidth="2" />
+                            {point.count > 0 && (
+                          <text x={point.x} y={point.y - 12} textAnchor="middle" fontSize="12" fontWeight="bold" fill="#b91c1c">
+                                {point.count}
+                              </text>
+                            )}
+                          </g>
+                        );
+                      })}
                     </svg>
                   );
                 })()}
               </div>
               
               <p className="text-xs text-center text-gray-400 mt-2">Horário do dia (0h - 23h)</p>
+              
+              <div className="flex items-center justify-center gap-6 mt-4">
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full bg-blue-600"></div>
+                  <span className="text-sm text-gray-600">Entradas</span>
+                </div>
+                <div className="flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full bg-red-500"></div>
+                  <span className="text-sm text-gray-600">Ocorrências</span>
+                </div>
+              </div>
             </div>
 
             {/* Top Motoristas */}
@@ -589,20 +715,39 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
               <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center gap-2">
                 <BarChart3 className="w-5 h-5 text-gray-500" /> Comparativo de Registros por Empresa
               </h3>
+              <div className="flex items-center justify-end gap-4 mb-4">
+                 <div className="flex items-center gap-1">
+                    <div className="w-3 h-3 bg-blue-600 rounded-sm"></div>
+                    <span className="text-xs text-gray-600">Entradas</span>
+                 </div>
+                 <div className="flex items-center gap-1">
+                    <div className="w-3 h-3 bg-red-500 rounded-sm"></div>
+                    <span className="text-xs text-gray-600">Ocorrências</span>
+                 </div>
+              </div>
               <div className="h-64 flex items-end gap-2 sm:gap-4 pt-4 border-b border-gray-100">
                 {companyStats.map((stat) => {
-                  const max = Math.max(...companyStats.map(s => s.count), 1);
-                  const percent = (stat.count / max) * 100;
+                  const max = Math.max(...companyStats.map(s => Math.max(s.count, s.occurrencesCount)), 1);
                   return (
                     <div key={stat.name} className="flex-1 flex flex-col items-center justify-end h-full group">
-                      <span className="mb-1 text-xs font-bold text-gray-600">
-                        {stat.count}
-                      </span>
-                      <div 
-                        className="w-full bg-blue-600 rounded-t-md transition-all duration-500 hover:bg-blue-700 relative" 
-                        style={{ height: `${percent}%` }}
-                        title={`${stat.name}: ${stat.count}`}
-                      ></div>
+                      <div className="flex items-end justify-center gap-1 w-full h-full">
+                           <div className="flex flex-col items-center justify-end h-full w-1/2 group/bar">
+                               <span className="mb-1 text-[10px] font-bold text-blue-600 opacity-0 group-hover/bar:opacity-100 transition-opacity">{stat.count}</span>
+                               <div 
+                                 className="w-full bg-blue-600 rounded-t-sm transition-all duration-500 hover:bg-blue-700 relative" 
+                                 style={{ height: `${(stat.count / max) * 100}%` }}
+                                 title={`Entradas: ${stat.count}`}
+                               ></div>
+                           </div>
+                           <div className="flex flex-col items-center justify-end h-full w-1/2 group/bar">
+                               <span className="mb-1 text-[10px] font-bold text-red-600 opacity-0 group-hover/bar:opacity-100 transition-opacity">{stat.occurrencesCount}</span>
+                               <div 
+                                 className="w-full bg-red-500 rounded-t-sm transition-all duration-500 hover:bg-red-600 relative" 
+                                 style={{ height: `${(stat.occurrencesCount / max) * 100}%` }}
+                                 title={`Ocorrências: ${stat.occurrencesCount}`}
+                               ></div>
+                           </div>
+                      </div>
                       <div className="mt-2 text-xs text-gray-500 truncate w-full text-center" title={stat.name}>
                         {stat.name}
                       </div>
@@ -629,16 +774,13 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                   scrolling="no" 
                   marginHeight={0} 
                   marginWidth={0} 
-                  src={`https://maps.google.com/maps?width=100%25&height=100%25&hl=pt-BR&q=${encodeURIComponent(
-                    tenants.find(t => t.id === activeTenantId)?.address || 'Brasil'
-                  )}&t=&z=14&ie=UTF8&iwloc=B&output=embed`}
+                  src={getMapUrl()}
                   className="absolute inset-0"
                   title="Mapa de Localização"
                 ></iframe>
              </div>
 
              <div className="space-y-3 overflow-y-auto max-h-[400px]">
-               <p className="text-xs text-gray-400 px-1">Selecione para ver no mapa:</p>
                {tenants.map(t => (
                  <button 
                    key={t.id} 

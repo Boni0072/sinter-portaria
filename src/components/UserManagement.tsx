@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react';
 import { db, UserProfile, firebaseConfig } from './firebase';
-import { collection, getDocs, updateDoc, doc, query, orderBy, setDoc, where, limit, startAfter, QueryDocumentSnapshot } from 'firebase/firestore';
+import { collection, getDocs, updateDoc, doc, query, orderBy, setDoc, where, limit, startAfter, QueryDocumentSnapshot, getDoc } from 'firebase/firestore';
 import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { useAuth } from '../contexts/AuthContext';
-import { Shield, Mail, Calendar, Edit2, Check, X, UserPlus, Save, Eye, EyeOff, ChevronDown, Building2 } from 'lucide-react';
+import { Shield, Mail, Calendar, Edit2, Check, X, UserPlus, Save, Eye, EyeOff, ChevronDown, Building2, User } from 'lucide-react';
 
 const ITEMS_PER_PAGE = 10;
 
@@ -17,6 +17,7 @@ const AVAILABLE_PAGES = [
   { id: 'register-entry', label: 'Registrar Entrada' },
   { id: 'entries', label: 'Ver Registros' },
   { id: 'register-driver', label: 'Cadastrar Motorista' },
+  { id: 'register-occurrence', label: 'Registrar Ocorrência' },
   { id: 'drivers', label: 'Ver Motoristas' },
   { id: 'register-vehicle', label: 'Cadastrar Veículo' },
   { id: 'company-settings', label: 'Minha Empresa' },
@@ -31,9 +32,11 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
   const [lastVisible, setLastVisible] = useState<QueryDocumentSnapshot | null>(null);
   const [hasMore, setHasMore] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<any>('');
   
   const [isRegistering, setIsRegistering] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newLogin, setNewLogin] = useState('');
   const [newEmail, setNewEmail] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newRole, setNewRole] = useState('viewer');
@@ -49,21 +52,51 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
   const activeTenantId = propTenantId || userProfile?.tenantId;
 
   useEffect(() => {
-    if (userProfile) loadUsers(true);
-  }, [userProfile, activeTenantId]);
+    if (userProfile) {
+      if (activeTenantId === 'all' && tenants.length === 0) return;
+      loadUsers(true);
+    }
+  }, [userProfile, activeTenantId, tenants]);
 
   useEffect(() => {
     const fetchTenants = async () => {
-      if (!user?.uid) return;
+      if (!user?.uid || !userProfile) return;
       try {
-        const q = query(collection(db, 'tenants'), where('created_by', '==', user.uid));
-        const snapshot = await getDocs(q);
-        const list = snapshot.docs.map(doc => ({ 
-          id: doc.id, 
-          name: doc.data().name,
-          type: doc.data().type,
-          parentId: doc.data().parentId
-        }));
+        let list: any[] = [];
+        
+        // Se o usuário for admin, busca todas as empresas.
+        if (userProfile.role === 'admin') {
+           const snapshot = await getDocs(collection(db, 'tenants'));
+           list = snapshot.docs.map(doc => ({ 
+             id: doc.id, 
+             name: doc.data().name,
+             type: doc.data().type,
+             parentId: doc.data().parentId
+           }));
+        } else {
+           // Lógica antiga para outros usuários
+           // @ts-ignore
+           const allowed = userProfile?.allowedTenants;
+           if (allowed && Array.isArray(allowed) && allowed.length > 0) {
+              const promises = allowed.map(id => getDoc(doc(db, 'tenants', id)));
+              const docs = await Promise.all(promises);
+              list = docs.filter(d => d.exists()).map(doc => ({
+                id: doc.id,
+                name: doc.data().name,
+                type: doc.data().type,
+                parentId: doc.data().parentId
+              }));
+           } else {
+              const q = query(collection(db, 'tenants'), where('created_by', '==', user.uid));
+              const snapshot = await getDocs(q);
+              list = snapshot.docs.map(doc => ({ 
+                id: doc.id, 
+                name: doc.data().name,
+                type: doc.data().type,
+                parentId: doc.data().parentId
+              }));
+           }
+        }
 
         // Ordenar: Matrizes primeiro, depois por nome
         list.sort((a, b) => {
@@ -83,7 +116,7 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
       }
     };
     fetchTenants();
-  }, [user, activeTenantId]);
+  }, [user, userProfile, activeTenantId]);
 
   const handleTenantChange = (tenantId: string, isChecked: boolean) => {
     const tenant = tenants.find(t => t.id === tenantId);
@@ -115,22 +148,53 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
         setLoadingMore(true);
       }
 
-      if (!activeTenantId) return;
+      if (!activeTenantId) {
+        setLoading(false);
+        return;
+      }
 
-      let q = query(
-        collection(db, 'profiles'), 
-        where('tenantId', '==', activeTenantId), 
-        orderBy('created_at', 'desc'),
-        limit(ITEMS_PER_PAGE)
-      );
+      let q;
+      const baseConstraints = [orderBy('created_at', 'desc')];
 
       if (!isInitial && lastVisible) {
+        baseConstraints.push(startAfter(lastVisible));
+      }
+      baseConstraints.push(limit(ITEMS_PER_PAGE));
+
+      if (activeTenantId === 'all') {
+        // Se "Todas", busca usuários de qualquer empresa da lista (limite de 10 para query 'in')
+        const tenantIds = tenants.map(t => t.id).slice(0, 10);
+        
+        if (tenantIds.length === 0) {
+          setUsers([]);
+          setLoading(false);
+          setLoadingMore(false);
+          return;
+        }
+        
         q = query(
           collection(db, 'profiles'), 
-          where('tenantId', '==', activeTenantId), 
-          orderBy('created_at', 'desc'),
-          startAfter(lastVisible),
-          limit(ITEMS_PER_PAGE)
+          where('allowedTenants', 'array-contains-any', tenantIds), 
+          ...baseConstraints
+        );
+      } else {
+        // Se for Matriz, inclui também usuários das filiais para garantir visibilidade total
+        const currentTenant = tenants.find(t => t.id === activeTenantId);
+        let targetIds = [activeTenantId];
+        
+        if (currentTenant?.type === 'matriz') {
+          const childIds = tenants.filter(t => t.parentId === activeTenantId).map(t => t.id);
+          targetIds = [...targetIds, ...childIds];
+        }
+        
+        // Limita a 10 IDs (limite do Firestore para consultas 'IN' ou 'ARRAY-CONTAINS-ANY')
+        targetIds = targetIds.slice(0, 10);
+
+        q = query(
+          collection(db, 'profiles'), 
+          // Usa 'array-contains-any' se houver múltiplas empresas (Matriz+Filiais), senão usa 'array-contains'
+          where('allowedTenants', targetIds.length > 1 ? 'array-contains-any' : 'array-contains', targetIds.length > 1 ? targetIds : targetIds[0]), 
+          ...baseConstraints
         );
       }
 
@@ -157,7 +221,15 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
     } catch (err: any) {
       console.error('Erro ao carregar usuários:', err);
       if (err.code === 'failed-precondition' || err.message?.includes('index')) {
-        setError('Configuração necessária: É preciso criar um índice no Firebase. Verifique o link no console do navegador (F12).');
+        const message = err.message || '';
+        const match = message.match(/https:\/\/console\.firebase\.google\.com[^\s]*/);
+        const link = match ? match[0] : null;
+        
+        if (link) {
+          setError(<span>Configuração necessária: <a href={link} target="_blank" rel="noopener noreferrer" className="underline font-bold text-blue-700">Clique aqui para criar o índice</a>.</span>);
+        } else {
+          setError('Configuração necessária: É preciso criar um índice no Firebase. Verifique o link no console do navegador (F12).');
+        }
       } else {
         setError('Não foi possível carregar os usuários.');
       }
@@ -210,8 +282,16 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
       }
       const secondaryAuth = getAuth(secondaryApp);
 
-      // Garante que haja pelo menos uma empresa selecionada (usa a atual como fallback)
-      const tenantsToSave = selectedTenants.length > 0 ? selectedTenants : (activeTenantId ? [activeTenantId] : []);
+      // Garante que haja pelo menos uma empresa selecionada
+      let tenantsToSave = selectedTenants.length > 0 ? selectedTenants : [];
+      
+      if (tenantsToSave.length === 0) {
+        if (activeTenantId && activeTenantId !== 'all') {
+          tenantsToSave = [activeTenantId];
+        } else if (tenants.length > 0) {
+          tenantsToSave = [tenants[0].id]; // Fallback para a primeira empresa se estiver em "Todas"
+        }
+      }
 
       if (tenantsToSave.length === 0) throw new Error("Selecione pelo menos uma empresa.");
 
@@ -219,6 +299,8 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
       
       // Cria o perfil no Firestore com a permissão selecionada
       await setDoc(doc(db, 'profiles', userCredential.user.uid), {
+        name: newName,
+        login: newLogin,
         email: newEmail,
         tenantId: tenantsToSave[0], // Define a primeira como principal para compatibilidade
         allowedTenants: tenantsToSave,
@@ -230,6 +312,8 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
       // Limpeza: desloga da instância secundária (NÃO deleta o app para evitar erros de concorrência)
       await signOut(secondaryAuth);
 
+      setNewName('');
+      setNewLogin('');
       setNewEmail('');
       setNewPassword('');
       setNewRole('viewer');
@@ -338,13 +422,48 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
           <h3 className="text-lg font-semibold text-gray-800 mb-4">Cadastrar Novo Usuário</h3>
           <form onSubmit={handleRegister} className="space-y-4">
             
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Nome de Usuário</label>
+                <input
+                  type="text"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  required
+                  placeholder="Nome completo"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Login</label>
+                <input
+                  type="text"
+                  value={newLogin}
+                  onChange={(e) => setNewLogin(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  placeholder="Login do sistema"
+                />
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {/* Seleção de Empresas */}
               {tenants.length > 0 && (
                 <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
-                  <label className="block text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
-                    <Building2 className="w-4 h-4" /> Acesso a Empresas
-                  </label>
+                  <div className="flex justify-between items-center mb-2">
+                    <label className="block text-sm font-bold text-gray-700 flex items-center gap-2">
+                      <Building2 className="w-4 h-4" /> Acesso a Empresas
+                    </label>
+                    <label className="flex items-center space-x-1 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={selectedTenants.length === tenants.length}
+                        onChange={(e) => setSelectedTenants(e.target.checked ? tenants.map(t => t.id) : [])}
+                        className="rounded text-blue-600 focus:ring-blue-500 w-3 h-3"
+                      />
+                      <span className="text-xs text-gray-500">Todas</span>
+                    </label>
+                  </div>
                   <div className="space-y-2 max-h-40 overflow-y-auto">
                     {tenants.map(t => (
                       <label key={t.id} className="flex items-center space-x-2 cursor-pointer">
@@ -367,9 +486,20 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
 
               {/* Seleção de Páginas */}
               <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
-                <label className="block text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
-                  <Shield className="w-4 h-4" /> Acesso a Páginas
-                </label>
+                <div className="flex justify-between items-center mb-2">
+                  <label className="block text-sm font-bold text-gray-700 flex items-center gap-2">
+                    <Shield className="w-4 h-4" /> Acesso a Páginas
+                  </label>
+                  <label className="flex items-center space-x-1 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={selectedPages.length === AVAILABLE_PAGES.length}
+                      onChange={(e) => setSelectedPages(e.target.checked ? AVAILABLE_PAGES.map(p => p.id) : [])}
+                      className="rounded text-blue-600 focus:ring-blue-500 w-3 h-3"
+                    />
+                    <span className="text-xs text-gray-500">Todas</span>
+                  </label>
+                </div>
                 <div className="space-y-2 max-h-40 overflow-y-auto">
                   {AVAILABLE_PAGES.map(page => (
                     <label key={page.id} className="flex items-center space-x-2 cursor-pointer">
@@ -466,10 +596,13 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
                 <tr key={user.id} className="hover:bg-gray-50 transition">
                   <td className="px-6 py-4">
                     <div className="flex items-center">
-                      <div className="bg-blue-100 p-2 rounded-full mr-3">
-                        <Mail className="w-4 h-4 text-blue-600" />
+                      <div className="bg-gray-100 p-2 rounded-full mr-3">
+                        <User className="w-4 h-4 text-gray-600" />
                       </div>
-                      <span className="text-sm font-medium text-gray-900">{user.email}</span>
+                      <div>
+                        <p className="text-sm font-medium text-gray-900">{(user as any).name || '---'}</p>
+                        <p className="text-xs text-gray-500">{(user as any).login || user.email}</p>
+                      </div>
                     </div>
                   </td>
                   <td className="px-6 py-4">
@@ -548,7 +681,18 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
-                  <label className="block text-sm font-bold text-gray-700 mb-2">Acesso a Empresas</label>
+                  <div className="flex justify-between items-center mb-2">
+                    <label className="block text-sm font-bold text-gray-700">Acesso a Empresas</label>
+                    <label className="flex items-center space-x-1 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={selectedTenants.length === tenants.length}
+                        onChange={(e) => setSelectedTenants(e.target.checked ? tenants.map(t => t.id) : [])}
+                        className="rounded text-blue-600 focus:ring-blue-500 w-3 h-3"
+                      />
+                      <span className="text-xs text-gray-500">Todas</span>
+                    </label>
+                  </div>
                   <div className="space-y-2">
                     {tenants.map(t => (
                       <label key={t.id} className="flex items-center space-x-2 cursor-pointer">
@@ -569,7 +713,18 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
                 </div>
 
                 <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
-                  <label className="block text-sm font-bold text-gray-700 mb-2">Acesso a Páginas</label>
+                  <div className="flex justify-between items-center mb-2">
+                    <label className="block text-sm font-bold text-gray-700">Acesso a Páginas</label>
+                    <label className="flex items-center space-x-1 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={selectedPages.length === AVAILABLE_PAGES.length}
+                        onChange={(e) => setSelectedPages(e.target.checked ? AVAILABLE_PAGES.map(p => p.id) : [])}
+                        className="rounded text-blue-600 focus:ring-blue-500 w-3 h-3"
+                      />
+                      <span className="text-xs text-gray-500">Todas</span>
+                    </label>
+                  </div>
                   <div className="space-y-2">
                     {AVAILABLE_PAGES.map(page => (
                       <label key={page.id} className="flex items-center space-x-2 cursor-pointer">

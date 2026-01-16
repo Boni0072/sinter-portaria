@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { db } from './firebase';
 import { doc, updateDoc, setDoc, getDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { LogOut, Users, ClipboardList, UserPlus, ChevronLeft, ChevronRight, Camera, Shield, ArrowRightLeft, Truck, BarChart3, CarFront, Building2, LayoutGrid } from 'lucide-react';
+import { LogOut, Users, ClipboardList, UserPlus, ChevronLeft, ChevronRight, Camera, Shield, ArrowRightLeft, Truck, BarChart3, CarFront, Building2, LayoutGrid, AlertTriangle } from 'lucide-react';
 import RegisterEntry from './RegisterEntry';
 import EntriesList from './EntriesList';
 import UserManagement from './UserManagement';
@@ -11,8 +11,9 @@ import DriversList from './DriversList';
 import Indicators from './Indicators';
 import RegisterVehicle from './RegisterVehicle';
 import CompanySettings from './CompanySettings';
+import RegisterOccurrence from './RegisterOccurrence';
 
-type View = 'entries' | 'register-entry' | 'drivers' | 'register-driver' | 'users' | 'indicators' | 'register-vehicle' | 'company-settings';
+type View = 'entries' | 'register-entry' | 'drivers' | 'register-driver' | 'users' | 'indicators' | 'register-vehicle' | 'company-settings' | 'register-occurrence';
 
 interface Tenant {
   id: string;
@@ -28,6 +29,9 @@ export default function Dashboard() {
   const [portalTitle, setPortalTitle] = useState(localStorage.getItem('portal_title') || 'Sistema de Portaria');
   const [portalSubtitle, setPortalSubtitle] = useState(localStorage.getItem('portal_subtitle') || 'Controle de Acesso');
   const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [showIntro, setShowIntro] = useState(true);
+  const [videoPlaying, setVideoPlaying] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [availableTenants, setAvailableTenants] = useState<Tenant[]>([]);
@@ -155,11 +159,84 @@ export default function Dashboard() {
     }
   };
 
+  const handleStartIntro = () => {
+    setVideoPlaying(true);
+    setTimeout(() => {
+      if (videoRef.current) {
+        videoRef.current.play().catch(err => console.error("Erro ao reproduzir vídeo:", err));
+        try {
+            if (videoRef.current.requestFullscreen) {
+                videoRef.current.requestFullscreen();
+            }
+        } catch (e) {
+            console.log("Fullscreen bloqueado ou não suportado");
+        }
+      }
+    }, 100);
+  };
+
+  const handleIntroEnd = () => {
+    if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+    }
+    setShowIntro(false);
+    sessionStorage.setItem('intro_seen', 'true');
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-50">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-900"></div>
       </div>
+    );
+  }
+
+  if (showIntro) {
+    return (
+        <div className="fixed inset-0 z-[9999] bg-gray-900 flex flex-col items-center justify-center">
+            {!videoPlaying ? (
+                <div className="text-center animate-in fade-in zoom-in duration-500 p-8">
+                    {customLogo && (
+                        <img 
+                            src={customLogo} 
+                            alt="Logo" 
+                            className="w-32 h-32 object-contain mx-auto mb-8 drop-shadow-2xl" 
+                        />
+                    )}
+                    <h1 className="text-4xl font-bold text-white mb-2">{portalTitle}</h1>
+                    <p className="text-blue-200 text-lg mb-12">{portalSubtitle}</p>
+                    
+                    <button 
+                        onClick={handleStartIntro}
+                        className="group relative px-8 py-4 bg-blue-600 hover:bg-blue-500 text-white text-xl font-bold rounded-full transition-all transform hover:scale-105 shadow-[0_0_20px_rgba(37,99,235,0.5)] flex items-center gap-3 mx-auto overflow-hidden"
+                    >
+                        <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
+                        <span className="relative">Entrar no Sistema</span>
+                        <ChevronRight className="w-6 h-6 relative group-hover:translate-x-1 transition-transform" />
+                    </button>
+                </div>
+            ) : (
+                <div className="w-full h-full bg-black relative">
+                    <video 
+                        ref={videoRef}
+                        src="/video.mp4" 
+                        className="w-full h-full object-contain"
+                        onEnded={handleIntroEnd}
+                        playsInline
+                        autoPlay
+                    >
+                        <source src="/video.mp4" type="video/mp4" />
+                        Seu navegador não suporta a tag de vídeo.
+                    </video>
+                    <button 
+                        onClick={handleIntroEnd}
+                        className="absolute top-8 right-8 text-white/50 hover:text-white border border-white/30 hover:border-white rounded-full px-6 py-2 text-sm transition-all z-50 backdrop-blur-sm hover:bg-white/10"
+                    >
+                        Pular
+                    </button>
+                </div>
+            )}
+        </div>
     );
   }
 
@@ -199,6 +276,9 @@ export default function Dashboard() {
         return <CompanySettings {...commonProps} />;
       case 'indicators':
         return <Indicators {...commonProps} />;
+      case 'register-occurrence':
+        // @ts-ignore
+        return <RegisterOccurrence onSuccess={() => setCurrentView('indicators')} {...commonProps} />;
       default:
         return <Indicators {...commonProps} />;
     }
@@ -212,13 +292,6 @@ export default function Dashboard() {
           isSidebarCollapsed ? 'w-20' : 'w-64'
         } bg-blue-900 text-white transition-all duration-300 fixed h-full z-10 flex flex-col shadow-xl`}
       >
-        <button
-          onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
-          className="absolute -right-3 top-9 bg-blue-700 text-white p-1 rounded-full shadow-md hover:bg-blue-600 transition-colors z-20"
-        >
-          {isSidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
-        </button>
-
         <div className={`p-6 flex flex-col items-center border-b border-blue-800 ${isSidebarCollapsed ? 'px-2' : ''}`}>
           <div 
             className="bg-white/10 p-3 rounded-xl mb-3 shadow-lg backdrop-blur-sm relative group cursor-pointer overflow-hidden"
@@ -289,26 +362,6 @@ export default function Dashboard() {
           )}
         </div>
 
-        {/* Seletor de Empresa (Matriz/Filial) */}
-        {!isSidebarCollapsed && availableTenants.length > 1 && (
-          <div className="px-4 py-2">
-            <label className="text-xs text-blue-300 mb-1 block flex items-center gap-1">
-              <LayoutGrid className="w-3 h-3" /> Selecionar Unidade
-            </label>
-            <select
-              value={selectedTenantId}
-              onChange={(e) => setSelectedTenantId(e.target.value)}
-              className="w-full bg-blue-800 text-white text-sm border border-blue-700 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            >
-              {availableTenants.map(tenant => (
-                <option key={tenant.id} value={tenant.id}>
-                  {tenant.name} {tenant.type === 'matriz' ? '(Matriz)' : ''}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-
         <nav className="flex-1 px-4 py-6 space-y-2 overflow-y-auto">
           <button
             onClick={() => setCurrentView('indicators')}
@@ -336,6 +389,20 @@ export default function Dashboard() {
           >
             <ArrowRightLeft className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Registrar Entrada</span>}
+          </button>
+
+          <button
+            onClick={() => setCurrentView('register-occurrence')}
+            style={{ display: canAccess('register-occurrence') ? 'flex' : 'none' }}
+            title={isSidebarCollapsed ? "Registrar Ocorrência" : ""}
+            className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
+              currentView === 'register-occurrence'
+                ? 'bg-blue-800 text-white font-medium shadow-inner'
+                : 'text-blue-100 hover:bg-blue-800/50 hover:text-white'
+            }`}
+          >
+            <AlertTriangle className="w-5 h-5 min-w-[1.25rem]" />
+            {!isSidebarCollapsed && <span>Registrar Ocorrência</span>}
           </button>
 
           <button
@@ -423,38 +490,54 @@ export default function Dashboard() {
           </button>
         </nav>
 
-        <div className="p-4 border-t border-blue-800 bg-blue-900">
-          <div className={`flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} mb-3`}>
-            <div className="w-8 h-8 rounded-full bg-blue-700 flex items-center justify-center text-white font-bold text-xs shrink-0">
-              {user?.email?.[0].toUpperCase()}
-            </div>
-            {!isSidebarCollapsed && (
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-white truncate">{user?.email}</p>
-                <p className="text-xs text-blue-300 capitalize">
-                  {userProfile?.role === 'admin' ? 'Administrador' : 
-                   userProfile?.role === 'operator' ? 'Operador' : 'Visualizador'}
-                </p>
-              </div>
-            )}
-          </div>
+        <div className="p-4 border-t border-blue-800">
           <button
-            onClick={signOut}
-            title={isSidebarCollapsed ? "Sair" : ""}
-            className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'justify-center space-x-2'} px-4 py-2 text-red-200 bg-red-900/30 border border-red-900/50 rounded-lg hover:bg-red-900/50 hover:text-white transition text-sm`}
+            onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+            className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-2 rounded-lg text-blue-200 hover:bg-blue-800 hover:text-white transition-colors`}
+            title={isSidebarCollapsed ? "Expandir Menu" : "Recolher Menu"}
           >
-            <LogOut className="w-4 h-4" />
-            {!isSidebarCollapsed && <span>Sair</span>}
+            {isSidebarCollapsed ? <ChevronRight className="w-5 h-5" /> : <ChevronLeft className="w-5 h-5" />}
+            {!isSidebarCollapsed && <span>Recolher Menu</span>}
           </button>
         </div>
       </aside>
 
       {/* Main Content */}
-      <main className={`flex-1 ${isSidebarCollapsed ? 'ml-20' : 'ml-64'} p-8 transition-all duration-300`}>
-        <div className="bg-white rounded-xl shadow-sm p-6 min-h-full">
-          {renderView()}
-        </div>
-      </main>
+      <div className={`flex-1 flex flex-col ${isSidebarCollapsed ? 'ml-20' : 'ml-64'} transition-all duration-300 min-h-screen`}>
+        {/* Header */}
+        <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-end px-8 shadow-sm sticky top-0 z-10">
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-3">
+                <div className="text-right hidden sm:block">
+                  <p className="text-sm font-medium text-gray-700">{user?.email}</p>
+                  <p className="text-xs text-gray-500 capitalize">
+                    {userProfile?.role === 'admin' ? 'Administrador' : 
+                     userProfile?.role === 'operator' ? 'Operador' : 'Visualizador'}
+                  </p>
+                </div>
+                <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold shadow-sm border-2 border-blue-100">
+                  {user?.email?.[0].toUpperCase()}
+                </div>
+              </div>
+              <div className="h-8 w-px bg-gray-200 mx-2"></div>
+              <button
+                onClick={signOut}
+                className="flex items-center gap-2 text-gray-500 hover:text-red-600 hover:bg-red-50 px-3 py-2 rounded-lg transition-colors"
+                title="Sair do Sistema"
+              >
+                <LogOut className="w-5 h-5" />
+                <span className="text-sm font-medium hidden sm:inline">Sair</span>
+              </button>
+            </div>
+        </header>
+
+        {/* Content */}
+        <main className="p-8 flex-1 bg-gray-50">
+          <div className="bg-white rounded-xl shadow-sm p-6 min-h-full">
+            {renderView()}
+          </div>
+        </main>
+      </div>
     </div>
   );
 }

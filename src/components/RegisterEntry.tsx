@@ -69,8 +69,8 @@ export default function RegisterEntry({ onSuccess }: Props) {
              if (typeof pages === 'string') pages = [pages];
 
              if (Array.isArray(pages)) {
-                setIsRestrictedMode(true);
-                if (!pages.includes('register_entry')) {
+                // setIsRestrictedMode(true);
+                if (!pages.includes('register-entry')) {
                    setError('Acesso negado: Você não tem permissão para visualizar esta página.');
                    setCheckingAccess(false);
                    return;

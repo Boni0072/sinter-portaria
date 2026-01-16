@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { db } from './firebase';
-import { doc, setDoc, onSnapshot, collection, addDoc, query, where, deleteDoc, getDoc, getDocs } from 'firebase/firestore';
+import { doc, setDoc, onSnapshot, collection, addDoc, query, where, deleteDoc, getDoc, getDocs, documentId } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
 import { Building2, Wifi, Plus, Store, Trash2, Link as LinkIcon, Pencil } from 'lucide-react';
 
@@ -42,34 +42,39 @@ export default function CompanySettings({ tenantId: propTenantId }: Props) {
   const activeTenantId = propTenantId || userProfile?.tenantId || user?.uid;
 
   useEffect(() => {
-    if (!activeTenantId) return;
+    if (!user?.uid) return;
 
-    // Listener para TODAS as Empresas criadas pelo usuário
-    let unsubscribeAllCompanies: () => void = () => {}; // Initialize to avoid undefined
-    if (user?.uid) {
-      const qAllCompanies = query(collection(db, 'tenants'), where('created_by', '==', user.uid));
-      unsubscribeAllCompanies = onSnapshot(qAllCompanies, (snapshot) => {
-        const companiesList: Filial[] = [];
-        snapshot.forEach((doc) => {
-          const data = doc.data();
-          companiesList.push({
-            id: doc.id,
-            name: data.name,
-            cnpj: data.cnpj,
-            phone: data.phone,
-            address: data.address,
-            type: data.type || 'matriz', // Default to matriz if type is not set
-            parentId: data.parentId
-          });
-        });
-        setAllCompanies(companiesList);
-      });
+    let q;
+    // @ts-ignore
+    const allowed = userProfile?.allowedTenants;
+
+    if (allowed && Array.isArray(allowed) && allowed.length > 0) {
+       // Busca empresas permitidas (limite de 10 para query 'in')
+       q = query(collection(db, 'tenants'), where(documentId(), 'in', allowed.slice(0, 10)));
+    } else {
+       // Busca empresas criadas pelo usuário
+       q = query(collection(db, 'tenants'), where('created_by', '==', user.uid));
     }
 
-    return () => {
-      unsubscribeAllCompanies();
-    };
-  }, [user, userProfile, activeTenantId, user?.uid]); // Add user?.uid to dependencies
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const companiesList: Filial[] = [];
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        companiesList.push({
+          id: doc.id,
+          name: data.name,
+          cnpj: data.cnpj,
+          phone: data.phone,
+          address: data.address,
+          type: data.type || 'matriz', // Default to matriz if type is not set
+          parentId: data.parentId
+        });
+      });
+      setAllCompanies(companiesList);
+    });
+
+    return () => unsubscribe();
+  }, [user, userProfile]);
 
   const handleCreateCompany = async () => {
     if (!createData.name.trim()) {
@@ -352,14 +357,14 @@ export default function CompanySettings({ tenantId: propTenantId }: Props) {
           ))}
         </div>
 
-        {/* Filiais Sem Vínculo (Órfãs) */}
-        {allCompanies.filter(c => c.type === 'filial' && !c.parentId).length > 0 && (
+        {/* Filiais Sem Vínculo (Órfãs) ou com Matriz não visível */}
+        {allCompanies.filter(c => c.type === 'filial' && (!c.parentId || !allCompanies.some(m => m.id === c.parentId))).length > 0 && (
           <div className="mt-8">
             <h4 className="text-sm font-bold text-orange-800 mb-3 flex items-center gap-2">
-              <Store className="w-4 h-4" /> Filiais Sem Vínculo (Órfãs)
+              <Store className="w-4 h-4" /> Outras Unidades / Filiais
             </h4>
             <div className="border border-orange-200 rounded-lg overflow-hidden">
-               {allCompanies.filter(c => c.type === 'filial' && !c.parentId).map(filial => (
+               {allCompanies.filter(c => c.type === 'filial' && (!c.parentId || !allCompanies.some(m => m.id === c.parentId))).map(filial => (
                  <div key={filial.id} className="p-4 bg-orange-50 flex justify-between items-center border-b border-orange-100 last:border-0">
                     <div>
                       <p className="font-medium text-gray-800">{filial.name}</p>
