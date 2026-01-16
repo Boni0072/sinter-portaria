@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { db } from './firebase';
 import { collection, addDoc, getDocs, query, where, doc, getDoc, setDoc, orderBy, documentId } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { Save, Camera, Upload, AlertTriangle, X, Building2, User, ChevronDown, ChevronUp } from 'lucide-react';
+import { Save, Camera, Upload, AlertTriangle, X, Building2, User, ChevronDown, ChevronUp, Package, Shield, Car } from 'lucide-react';
 
 interface Props {
   onSuccess: () => void;
@@ -22,6 +22,32 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
   const [occurrences, setOccurrences] = useState<any[]>([]);
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
   const [isFormVisible, setIsFormVisible] = useState(false);
+
+  // Novos estados para Material de Carga e Armamento
+  const [cargoMaterial, setCargoMaterial] = useState({
+    radioHT: '',
+    qtdBotons: '',
+    qtdCarregadores: '',
+    qtdCapaChuva: '',
+    qtdPendRonda: '',
+    qtdLanternas: ''
+  });
+  const [weaponry, setWeaponry] = useState({
+    arma1: '',
+    arma2: '',
+    arma3: '',
+    arma4: '',
+    municoes: ''
+  });
+
+  // Estado para Veículo
+  const [selectedVehicle, setSelectedVehicle] = useState('');
+  const [vehicleData, setVehicleData] = useState({
+    plate: '',
+    model: '',
+    color: '',
+    company: ''
+  });
 
   const photoRefs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)];
 
@@ -201,6 +227,9 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
       await addDoc(collection(db, 'tenants', currentTenantId, 'occurrences'), {
         title,
         description,
+        cargo_material: cargoMaterial,
+        weaponry: weaponry,
+        vehicle: selectedVehicle === 'new' ? vehicleData : null,
         photos: validPhotoUrls,
         created_by: user?.uid,
         created_at: new Date().toISOString()
@@ -210,6 +239,28 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
       setDescription('');
       setPhotos([null, null, null]);
       setPhotoPreviews([null, null, null]);
+      setCargoMaterial({
+        radioHT: '',
+        qtdBotons: '',
+        qtdCarregadores: '',
+        qtdCapaChuva: '',
+        qtdPendRonda: '',
+        qtdLanternas: ''
+      });
+      setWeaponry({
+        arma1: '',
+        arma2: '',
+        arma3: '',
+        arma4: '',
+        municoes: ''
+      });
+      setVehicleData({
+        plate: '',
+        model: '',
+        color: '',
+        company: ''
+      });
+      setSelectedVehicle('');
       if (photoRefs[0].current) photoRefs[0].current.value = '';
       if (photoRefs[1].current) photoRefs[1].current.value = '';
       if (photoRefs[2].current) photoRefs[2].current.value = '';
@@ -284,6 +335,166 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
             required
             placeholder="Descreva o que aconteceu..."
           />
+        </div>
+
+        {/* Seção Material de Carga */}
+        <div className="bg-gray-50 p-5 rounded-xl border border-gray-200">
+            <h3 className="text-sm font-bold text-gray-700 mb-4 flex items-center gap-2">
+                <Package className="w-4 h-4 text-blue-600" /> Material de Carga
+            </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                {/* Linha 1 */}
+                <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Qtd. Rádio HT</label>
+                    <input 
+                        type="number" 
+                        value={cargoMaterial.radioHT}
+                        onChange={e => setCargoMaterial({...cargoMaterial, radioHT: e.target.value})}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                    />
+                </div>
+                <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Qtd. Botons</label>
+                    <input 
+                        type="number" 
+                        value={cargoMaterial.qtdBotons}
+                        onChange={e => setCargoMaterial({...cargoMaterial, qtdBotons: e.target.value})}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                    />
+                </div>
+                <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Qtd. Carregadores</label>
+                    <input 
+                        type="number" 
+                        value={cargoMaterial.qtdCarregadores}
+                        onChange={e => setCargoMaterial({...cargoMaterial, qtdCarregadores: e.target.value})}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                    />
+                </div>
+
+                {/* Linha 2 */}
+                <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Qtd. Capa de Chuva</label>
+                    <input 
+                        type="number" 
+                        value={cargoMaterial.qtdCapaChuva}
+                        onChange={e => setCargoMaterial({...cargoMaterial, qtdCapaChuva: e.target.value})}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                    />
+                </div>
+                <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Qtd. Pend. de Ronda</label>
+                    <input 
+                        type="number" 
+                        value={cargoMaterial.qtdPendRonda}
+                        onChange={e => setCargoMaterial({...cargoMaterial, qtdPendRonda: e.target.value})}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                    />
+                </div>
+                <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Qtd. Lanternas</label>
+                    <input 
+                        type="number" 
+                        value={cargoMaterial.qtdLanternas}
+                        onChange={e => setCargoMaterial({...cargoMaterial, qtdLanternas: e.target.value})}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                    />
+                </div>
+            </div>
+        </div>
+
+        {/* Seção Armamento */}
+        <div className="bg-gray-50 p-5 rounded-xl border border-gray-200">
+            <h3 className="text-sm font-bold text-gray-700 mb-4 flex items-center gap-2">
+                <Shield className="w-4 h-4 text-blue-600" /> Armamento
+            </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {[1, 2, 3, 4].map(num => (
+                    <div key={num}>
+                        <label className="block text-xs font-medium text-gray-500 mb-1">{num}º Arma nº</label>
+                        <input 
+                            type="text" 
+                            value={weaponry[`arma${num}` as keyof typeof weaponry]}
+                            onChange={e => setWeaponry({...weaponry, [`arma${num}`]: e.target.value})}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                            placeholder="Numeração"
+                        />
+                    </div>
+                ))}
+                <div className="sm:col-span-2">
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Nº de Munições</label>
+                    <input 
+                        type="number" 
+                        value={weaponry.municoes}
+                        onChange={e => setWeaponry({...weaponry, municoes: e.target.value})}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                        placeholder="Quantidade total"
+                    />
+                </div>
+            </div>
+        </div>
+
+        {/* Seção Veículo */}
+        <div className="bg-gray-50 p-5 rounded-xl border border-gray-200">
+            <h3 className="text-sm font-bold text-gray-700 mb-4 flex items-center gap-2">
+                <Car className="w-4 h-4 text-blue-600" /> Veículo
+            </h3>
+            <div className="mb-4">
+                <label className="block text-xs font-medium text-gray-500 mb-1">Selecionar Veículo</label>
+                <select
+                    value={selectedVehicle}
+                    onChange={(e) => setSelectedVehicle(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                >
+                    <option value="">Nenhum veículo envolvido</option>
+                    <option value="new">Novo Veículo</option>
+                </select>
+            </div>
+
+            {selectedVehicle === 'new' && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label className="block text-xs font-medium text-gray-500 mb-1">Placa</label>
+                        <input 
+                            type="text" 
+                            value={vehicleData.plate}
+                            onChange={e => setVehicleData({...vehicleData, plate: e.target.value})}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                            placeholder="ABC-1234"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-xs font-medium text-gray-500 mb-1">Modelo</label>
+                        <input 
+                            type="text" 
+                            value={vehicleData.model}
+                            onChange={e => setVehicleData({...vehicleData, model: e.target.value})}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                            placeholder="Modelo/Cor"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-xs font-medium text-gray-500 mb-1">Cor</label>
+                        <input 
+                            type="text" 
+                            value={vehicleData.color}
+                            onChange={e => setVehicleData({...vehicleData, color: e.target.value})}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                            placeholder="Cor do veículo"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-xs font-medium text-gray-500 mb-1">Empresa</label>
+                        <input 
+                            type="text" 
+                            value={vehicleData.company}
+                            onChange={e => setVehicleData({...vehicleData, company: e.target.value})}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                            placeholder="Empresa do veículo"
+                        />
+                    </div>
+                </div>
+            )}
         </div>
 
         <div>

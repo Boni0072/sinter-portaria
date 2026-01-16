@@ -18,6 +18,7 @@ export default function RegisterEntry({ onSuccess }: Props) {
   const [vehicleBrand, setVehicleBrand] = useState('');
   const [vehicleModel, setVehicleModel] = useState('');
   const [vehicleColor, setVehicleColor] = useState('');
+  const [vehicleCompany, setVehicleCompany] = useState('');
   const [notes, setNotes] = useState('');
   const [vehiclePhoto, setVehiclePhoto] = useState<File | null>(null);
   const [platePhoto, setPlatePhoto] = useState<File | null>(null);
@@ -289,6 +290,7 @@ export default function RegisterEntry({ onSuccess }: Props) {
           brand: vehicleBrand,
           model: vehicleModel,
           color: vehicleColor,
+          company: vehicleCompany,
           // O driver_id aqui é redundante pois já está no caminho, mas pode ser útil
           driver_id: selectedDriver, 
           created_at: new Date().toISOString()
@@ -307,7 +309,7 @@ export default function RegisterEntry({ onSuccess }: Props) {
       // Otimização: Salvar dados desnormalizados para leitura rápida na lista
       const driverSnapshot = drivers.find(d => d.id === selectedDriver);
       const vehicleSnapshot = isNewVehicle 
-        ? { plate: newPlate.toUpperCase(), brand: vehicleBrand, model: vehicleModel, color: vehicleColor }
+        ? { plate: newPlate.toUpperCase(), brand: vehicleBrand, model: vehicleModel, color: vehicleColor, company: vehicleCompany }
         : vehicles.find(v => v.id === selectedVehicle);
 
       // Salvar Entrada com timeout de segurança
@@ -326,7 +328,8 @@ export default function RegisterEntry({ onSuccess }: Props) {
           vehicle_plate: vehicleSnapshot?.plate || '',
           vehicle_brand: vehicleSnapshot?.brand || '',
           vehicle_model: vehicleSnapshot?.model || '',
-          vehicle_color: vehicleSnapshot?.color || ''
+          vehicle_color: vehicleSnapshot?.color || '',
+          vehicle_company: (vehicleSnapshot as any)?.company || ''
         },
         registered_by: user?.uid,
         entry_time: new Date().toISOString()
@@ -341,6 +344,7 @@ export default function RegisterEntry({ onSuccess }: Props) {
       setVehicleBrand('');
       setVehicleModel('');
       setVehicleColor('');
+      setVehicleCompany('');
       setNotes('');
       setVehiclePhoto(null);
       setPlatePhoto(null);
@@ -660,6 +664,16 @@ export default function RegisterEntry({ onSuccess }: Props) {
                           onChange={(e) => setVehicleColor(e.target.value)}
                           className="w-full px-4 py-2.5 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
                           placeholder="Ex: Preto"
+                        />
+                      </div>
+                      <div className="sm:col-span-2">
+                        <label className="block text-xs font-semibold text-gray-600 uppercase tracking-wider mb-1.5">Empresa</label>
+                        <input
+                          type="text"
+                          value={vehicleCompany}
+                          onChange={(e) => setVehicleCompany(e.target.value)}
+                          className="w-full px-4 py-2.5 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
+                          placeholder="Ex: Transportadora XYZ"
                         />
                       </div>
                     </div>

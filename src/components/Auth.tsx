@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { LogIn } from 'lucide-react';
 
 export default function Auth() {
   const [isLogin, setIsLogin] = useState(true);
@@ -47,14 +46,12 @@ export default function Auth() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-slate-100 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-8">
-        <div className="flex items-center justify-center mb-8">
-          <div className="bg-blue-600 p-3 rounded-xl">
-            <LogIn className="w-8 h-8 text-white" />
-          </div>
+        <div className="flex items-center justify-center mb-0">
+          <img src="/caminhao.png" alt="Logo" className="w-92 h-auto object-contain" />
         </div>
 
-        <h1 className="text-3xl font-bold text-center text-gray-800 mb-2">
-          Sistema de Portaria
+        <h1 className="text-3xl font-bold text-center text-gray-800 mb-2 -mt-10">
+        Controle da Portaria
         </h1>
         <p className="text-center text-gray-600 mb-8">
           {isLogin ? 'Entre com sua conta' : 'Crie sua conta'}
