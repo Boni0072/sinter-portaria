@@ -389,9 +389,7 @@ export default function RegisterEntry({ onSuccess }: Props) {
       {isRestrictedMode && (
         <div className="max-w-6xl mx-auto flex justify-between items-center mb-8 pb-4 border-b border-gray-200">
            <div className="flex items-center gap-3">
-              <div className="p-2 bg-blue-600 rounded-lg">
-                <Building2 className="w-6 h-6 text-white" />
-              </div>
+              <img src="/secontaf1.png" alt="Logo" className="h-12 w-auto object-contain" />
               <h1 className="text-2xl font-bold text-gray-800">Controle de Acesso</h1>
            </div>
            <button 
