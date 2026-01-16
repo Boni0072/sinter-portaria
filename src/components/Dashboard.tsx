@@ -37,6 +37,11 @@ export default function Dashboard() {
   const [availableTenants, setAvailableTenants] = useState<Tenant[]>([]);
   const [selectedTenantId, setSelectedTenantId] = useState<string>('');
 
+  const [sidebarHue, setSidebarHue] = useState<number>(() => {
+    const saved = localStorage.getItem('portal_sidebar_hue');
+    return saved ? parseInt(saved) : 220;
+  });
+
   // Auto-correção: Garante que o usuário atual tenha um perfil e tenantId
   useEffect(() => {
     if (user && !loading) {
@@ -290,9 +295,10 @@ export default function Dashboard() {
       <aside 
         className={`${
           isSidebarCollapsed ? 'w-20' : 'w-64'
-        } bg-blue-900 text-white transition-all duration-300 fixed h-full z-10 flex flex-col shadow-xl`}
+        } text-white transition-all duration-300 fixed h-full z-10 flex flex-col shadow-xl`}
+        style={{ backgroundColor: `hsl(${sidebarHue}, 65%, 20%)` }}
       >
-        <div className={`p-6 flex flex-col items-center border-b border-blue-800 ${isSidebarCollapsed ? 'px-2' : ''}`}>
+        <div className={`p-6 flex flex-col items-center border-b ${isSidebarCollapsed ? 'px-2' : ''}`} style={{ borderColor: `hsl(${sidebarHue}, 65%, 30%)` }}>
           <div 
             className="bg-white/10 p-3 rounded-xl mb-3 shadow-lg backdrop-blur-sm relative group cursor-pointer overflow-hidden"
             onClick={() => fileInputRef.current?.click()}
@@ -353,7 +359,7 @@ export default function Dashboard() {
                   <h1 className="text-xl font-bold text-white whitespace-nowrap">
                     {portalTitle}
                   </h1>
-                  <p className="text-xs text-blue-200 mt-1 group-hover:text-white transition-colors">
+                  <p className="text-xs text-white/60 mt-1 group-hover:text-white transition-colors">
                     {portalSubtitle}
                   </p>
                 </div>
@@ -369,9 +375,10 @@ export default function Dashboard() {
             title={isSidebarCollapsed ? "Indicadores" : ""}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
               currentView === 'indicators'
-                ? 'bg-blue-800 text-white font-medium shadow-inner'
-                : 'text-blue-100 hover:bg-blue-800/50 hover:text-white'
+                ? 'text-white font-medium shadow-inner'
+                : 'text-white/70 hover:bg-white/10 hover:text-white'
             }`}
+            style={{ backgroundColor: currentView === 'indicators' ? `hsl(${sidebarHue}, 65%, 30%)` : 'transparent' }}
           >
             <BarChart3 className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Indicadores</span>}
@@ -383,9 +390,10 @@ export default function Dashboard() {
             title={isSidebarCollapsed ? "Registrar Entrada" : ""}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
               currentView === 'register-entry'
-                ? 'bg-blue-800 text-white font-medium shadow-inner'
-                : 'text-blue-100 hover:bg-blue-800/50 hover:text-white'
+                ? 'text-white font-medium shadow-inner'
+                : 'text-white/70 hover:bg-white/10 hover:text-white'
             }`}
+            style={{ backgroundColor: currentView === 'register-entry' ? `hsl(${sidebarHue}, 65%, 30%)` : 'transparent' }}
           >
             <ArrowRightLeft className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Registrar Entrada</span>}
@@ -397,9 +405,10 @@ export default function Dashboard() {
             title={isSidebarCollapsed ? "Registrar Ocorrência" : ""}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
               currentView === 'register-occurrence'
-                ? 'bg-blue-800 text-white font-medium shadow-inner'
-                : 'text-blue-100 hover:bg-blue-800/50 hover:text-white'
+                ? 'text-white font-medium shadow-inner'
+                : 'text-white/70 hover:bg-white/10 hover:text-white'
             }`}
+            style={{ backgroundColor: currentView === 'register-occurrence' ? `hsl(${sidebarHue}, 65%, 30%)` : 'transparent' }}
           >
             <AlertTriangle className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Registrar Ocorrência</span>}
@@ -411,9 +420,10 @@ export default function Dashboard() {
             title={isSidebarCollapsed ? "Ver Registros" : ""}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
               currentView === 'entries'
-                ? 'bg-blue-800 text-white font-medium shadow-inner'
-                : 'text-blue-100 hover:bg-blue-800/50 hover:text-white'
+                ? 'text-white font-medium shadow-inner'
+                : 'text-white/70 hover:bg-white/10 hover:text-white'
             }`}
+            style={{ backgroundColor: currentView === 'entries' ? `hsl(${sidebarHue}, 65%, 30%)` : 'transparent' }}
           >
             <Truck className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Ver Registros</span>}
@@ -425,9 +435,10 @@ export default function Dashboard() {
             title={isSidebarCollapsed ? "Cadastrar Motorista" : ""}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
               currentView === 'register-driver'
-                ? 'bg-blue-800 text-white font-medium shadow-inner'
-                : 'text-blue-100 hover:bg-blue-800/50 hover:text-white'
+                ? 'text-white font-medium shadow-inner'
+                : 'text-white/70 hover:bg-white/10 hover:text-white'
             }`}
+            style={{ backgroundColor: currentView === 'register-driver' ? `hsl(${sidebarHue}, 65%, 30%)` : 'transparent' }}
           >
             <UserPlus className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Cadastrar Motorista</span>}
@@ -439,9 +450,10 @@ export default function Dashboard() {
             title={isSidebarCollapsed ? "Ver Motoristas" : ""}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
               currentView === 'drivers'
-                ? 'bg-blue-800 text-white font-medium shadow-inner'
-                : 'text-blue-100 hover:bg-blue-800/50 hover:text-white'
+                ? 'text-white font-medium shadow-inner'
+                : 'text-white/70 hover:bg-white/10 hover:text-white'
             }`}
+            style={{ backgroundColor: currentView === 'drivers' ? `hsl(${sidebarHue}, 65%, 30%)` : 'transparent' }}
           >
             <Users className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Ver Motoristas</span>}
@@ -453,9 +465,10 @@ export default function Dashboard() {
             title={isSidebarCollapsed ? "Cadastrar Veículo" : ""}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
               currentView === 'register-vehicle'
-                ? 'bg-blue-800 text-white font-medium shadow-inner'
-                : 'text-blue-100 hover:bg-blue-800/50 hover:text-white'
+                ? 'text-white font-medium shadow-inner'
+                : 'text-white/70 hover:bg-white/10 hover:text-white'
             }`}
+            style={{ backgroundColor: currentView === 'register-vehicle' ? `hsl(${sidebarHue}, 65%, 30%)` : 'transparent' }}
           >
             <CarFront className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Cadastrar Veículo</span>}
@@ -467,9 +480,10 @@ export default function Dashboard() {
             title={isSidebarCollapsed ? "Minha Empresa" : ""}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
               currentView === 'company-settings'
-                ? 'bg-blue-800 text-white font-medium shadow-inner'
-                : 'text-blue-100 hover:bg-blue-800/50 hover:text-white'
+                ? 'text-white font-medium shadow-inner'
+                : 'text-white/70 hover:bg-white/10 hover:text-white'
             }`}
+            style={{ backgroundColor: currentView === 'company-settings' ? `hsl(${sidebarHue}, 65%, 30%)` : 'transparent' }}
           >
             <Building2 className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Minha Empresa</span>}
@@ -481,19 +495,37 @@ export default function Dashboard() {
             title={isSidebarCollapsed ? "Gerenciar Usuários" : ""}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
               currentView === 'users'
-                ? 'bg-blue-800 text-white font-medium shadow-inner'
-                : 'text-blue-100 hover:bg-blue-800/50 hover:text-white'
+                ? 'text-white font-medium shadow-inner'
+                : 'text-white/70 hover:bg-white/10 hover:text-white'
             }`}
+            style={{ backgroundColor: currentView === 'users' ? `hsl(${sidebarHue}, 65%, 30%)` : 'transparent' }}
           >
             <Shield className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Usuários</span>}
           </button>
         </nav>
 
-        <div className="p-4 border-t border-blue-800">
+        <div className="p-4 border-t" style={{ borderColor: `hsl(${sidebarHue}, 65%, 30%)` }}>
+          {!isSidebarCollapsed && (
+            <div className="mb-4 px-2">
+               <label className="text-[10px] uppercase tracking-wider text-white/50 font-bold mb-2 block">Cor do Menu</label>
+               <input 
+                 type="range" 
+                 min="0" 
+                 max="360" 
+                 value={sidebarHue} 
+                 onChange={(e) => {
+                    const val = parseInt(e.target.value);
+                    setSidebarHue(val);
+                    localStorage.setItem('portal_sidebar_hue', val.toString());
+                 }}
+                 className="w-full h-1.5 bg-black/20 rounded-lg appearance-none cursor-pointer accent-white"
+               />
+            </div>
+          )}
           <button
             onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
-            className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-2 rounded-lg text-blue-200 hover:bg-blue-800 hover:text-white transition-colors`}
+            className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-2 rounded-lg text-white/70 hover:bg-white/10 hover:text-white transition-colors`}
             title={isSidebarCollapsed ? "Expandir Menu" : "Recolher Menu"}
           >
             {isSidebarCollapsed ? <ChevronRight className="w-5 h-5" /> : <ChevronLeft className="w-5 h-5" />}
