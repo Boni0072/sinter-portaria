@@ -51,7 +51,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
   const [limitCount, setLimitCount] = useState(ITEMS_PER_PAGE);
   const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState('');
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set([new Date().toLocaleDateString('pt-BR')]));
   
   const [tenants, setTenants] = useState<{id: string, name: string}[]>([]);
   const [selectedTenantId, setSelectedTenantId] = useState<string>('');
@@ -244,7 +244,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
   }, [entriesPerTenant]);
 
   const toggleGroup = (date: string) => {
-    setCollapsedGroups(prev => {
+    setExpandedGroups(prev => {
       const newSet = new Set(prev);
       if (newSet.has(date)) {
         newSet.delete(date);
@@ -419,7 +419,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
                   >
                     <td colSpan={12} className="px-6 py-2 text-sm font-bold text-gray-700">
                       <div className="flex items-center">
-                        {collapsedGroups.has(group.date) ? (
+                        {!expandedGroups.has(group.date) ? (
                           <ChevronRight className="w-4 h-4 mr-2" />
                         ) : (
                           <ChevronDown className="w-4 h-4 mr-2" />
@@ -434,7 +434,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
                       </div>
                     </td>
                   </tr>
-                  {!collapsedGroups.has(group.date) && group.items.map((entry) => (
+                  {expandedGroups.has(group.date) && group.items.map((entry) => (
                 <tr key={entry.id} className={!entry.exit_time ? 'bg-green-50/30' : 'hover:bg-gray-50'}>
                   <td className="px-6 py-2 whitespace-nowrap">
                     <span className="text-sm font-medium text-gray-900">{entry.tenant_name}</span>

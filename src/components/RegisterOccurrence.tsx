@@ -1,8 +1,8 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, Fragment } from 'react';
 import { db } from './firebase';
-import { collection, addDoc, getDocs, query, where, doc, getDoc, setDoc, orderBy, documentId, onSnapshot } from 'firebase/firestore';
+import { collection, addDoc, getDocs, query, where, doc, getDoc, setDoc, orderBy, documentId, onSnapshot, updateDoc } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { Save, Camera, Upload, AlertTriangle, X, Building2, User, ChevronDown, ChevronUp, Package, Shield, Car } from 'lucide-react';
+import { Save, Camera, Upload, AlertTriangle, X, Building2, User, ChevronDown, ChevronUp, Package, Shield, Car, ChevronRight, PenTool, Eraser } from 'lucide-react';
 
 interface Props {
   onSuccess: () => void;
@@ -22,6 +22,12 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
   const [occurrences, setOccurrences] = useState<any[]>([]);
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
   const [isFormVisible, setIsFormVisible] = useState(false);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set([new Date().toLocaleDateString('pt-BR')]));
+  
+  const [isSignatureModalOpen, setIsSignatureModalOpen] = useState(false);
+  const [signingOccurrenceId, setSigningOccurrenceId] = useState<string | null>(null);
+  const signatureCanvasRef = useRef<HTMLCanvasElement>(null);
+  const [isDrawingSignature, setIsDrawingSignature] = useState(false);
 
   // Novos estados para Material de Carga e Armamento
   const [cargoMaterial, setCargoMaterial] = useState({
@@ -270,6 +276,97 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
       setLoading(false);
     }
   };
+
+  const toggleGroup = (date: string) => {
+    setExpandedGroups(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(date)) {
+        newSet.delete(date);
+      } else {
+        newSet.add(date);
+      }
+      return newSet;
+    });
+  };
+
+  const groupedOccurrences = occurrences.reduce((acc, occ) => {
+    const occDate = new Date(occ.created_at);
+    const date = occDate.toLocaleDateString('pt-BR');
+    const weekday = occDate.toLocaleDateString('pt-BR', { weekday: 'long' });
+    const capitalizedWeekday = weekday.charAt(0).toUpperCase() + weekday.slice(1);
+    const lastGroup = acc[acc.length - 1];
+    
+    if (lastGroup && lastGroup.date === date) {
+      lastGroup.items.push(occ);
+    } else {
+      acc.push({ date, weekday: capitalizedWeekday, items: [occ] });
+    }
+    return acc;
+  }, [] as { date: string; weekday: string; items: any[] }[]);
+
+  const startSigning = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = signatureCanvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    setIsDrawingSignature(true);
+    ctx.beginPath();
+    ctx.moveTo(e.clientX - rect.left, e.clientY - rect.top);
+  };
+
+  const drawSignature = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!isDrawingSignature) return;
+    const canvas = signatureCanvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.lineTo(e.clientX - rect.left, e.clientY - rect.top);
+    ctx.stroke();
+  };
+
+  const stopSigning = () => {
+    setIsDrawingSignature(false);
+  };
+
+  const clearSignature = () => {
+    const canvas = signatureCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  };
+
+  const handleSaveSignature = async () => {
+    if (!signingOccurrenceId || !currentTenantId || !signatureCanvasRef.current) return;
+    
+    try {
+        const signatureUrl = signatureCanvasRef.current.toDataURL('image/png');
+        await updateDoc(doc(db, 'tenants', currentTenantId, 'occurrences', signingOccurrenceId), {
+            signature_url: signatureUrl,
+            signature_at: new Date().toISOString(),
+            signature_by: (userProfile as any)?.name || user?.email || 'Usuário'
+        });
+        setIsSignatureModalOpen(false);
+        setSigningOccurrenceId(null);
+    } catch (error) {
+        console.error("Error saving signature", error);
+        alert("Erro ao salvar assinatura");
+    }
+  };
+
+  useEffect(() => {
+    if (isSignatureModalOpen && signatureCanvasRef.current) {
+        const canvas = signatureCanvasRef.current;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 2;
+            ctx.lineCap = 'round';
+        }
+    }
+  }, [isSignatureModalOpen]);
 
   return (
     <div>
@@ -562,16 +659,40 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
                 <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Título</th>
                 <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Descrição</th>
                 <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Evidências</th>
+                <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Ações</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {occurrences.map((occ) => (
+              {groupedOccurrences.map((group) => (
+                <Fragment key={group.date}>
+                  <tr 
+                    className="bg-gray-100 border-y border-gray-200 cursor-pointer hover:bg-gray-200 transition-colors"
+                    onClick={() => toggleGroup(group.date)}
+                  >
+                    <td colSpan={7} className="px-6 py-2 text-sm font-bold text-gray-700">
+                      <div className="flex items-center">
+                        {!expandedGroups.has(group.date) ? (
+                          <ChevronRight className="w-4 h-4 mr-2" />
+                        ) : (
+                          <ChevronDown className="w-4 h-4 mr-2" />
+                        )}
+                        {group.date}
+                        <span className="ml-2 font-normal text-gray-500">
+                          - {group.weekday}
+                        </span>
+                        <span className="ml-2 text-xs font-normal text-gray-500">
+                          ({group.items.length})
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                  {expandedGroups.has(group.date) && group.items.map((occ) => (
                 <tr key={occ.id} className="hover:bg-gray-50">
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                     {tenants.find(t => t.id === currentTenantId)?.name || '---'}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {new Date(occ.created_at).toLocaleDateString('pt-BR')} {new Date(occ.created_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                    {new Date(occ.created_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="flex items-center">
@@ -605,11 +726,49 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
                         {(!occ.photos || occ.photos.length === 0) && <span className="text-gray-400 italic">Sem fotos</span>}
                     </div>
                   </td>
+                  <td className="px-6 py-4 text-sm text-gray-500">
+                    {occ.signature_url ? (
+                      <div className="flex flex-col gap-1 items-end">
+                        <div 
+                          className="h-8 w-20 bg-white border border-gray-200 rounded cursor-zoom-in transition-all duration-200 hover:scale-[3] active:scale-[3] hover:z-50 hover:shadow-xl hover:border-blue-400 origin-right relative"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setZoomedImage(occ.signature_url);
+                          }}
+                          title="Clique para ampliar assinatura"
+                        >
+                          <img src={occ.signature_url} alt="Assinatura" className="w-full h-full object-contain" />
+                        </div>
+                        <div className="text-right">
+                          {occ.signature_by && <div className="text-[10px] text-gray-800 font-bold">{occ.signature_by}</div>}
+                          <div className="text-[10px] text-gray-500">
+                          {occ.signature_at 
+                            ? new Date(occ.signature_at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+                            : ''}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <button 
+                          onClick={(e) => {
+                              e.stopPropagation();
+                              setSigningOccurrenceId(occ.id);
+                              setIsSignatureModalOpen(true);
+                          }}
+                          className="p-2 rounded-full transition-colors text-blue-600 hover:bg-blue-50"
+                          title="Coletar Assinatura"
+                      >
+                          <PenTool className="w-5 h-5" />
+                      </button>
+                    )}
+                  </td>
                 </tr>
+                  ))}
+                </Fragment>
               ))}
               {occurrences.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-6 py-8 text-center text-sm text-gray-500">
+                  <td colSpan={7} className="px-6 py-8 text-center text-sm text-gray-500">
                     Nenhuma ocorrência registrada nesta empresa.
                   </td>
                 </tr>
@@ -627,7 +786,7 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
           <img 
             src={zoomedImage} 
             alt="Zoom" 
-            className="w-full h-full object-contain shadow-2xl animate-in zoom-in-95 duration-200"
+            className="max-w-full max-h-full object-contain shadow-2xl animate-in zoom-in-95 duration-200 bg-white rounded-lg"
             onClick={(e) => e.stopPropagation()}
           />
           <button 
@@ -636,6 +795,49 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
           >
             <X className="w-8 h-8" />
           </button>
+        </div>
+      )}
+
+      {isSignatureModalOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+            <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6" onClick={e => e.stopPropagation()}>
+                <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-lg font-bold text-gray-800">Coletar Assinatura</h3>
+                    <button onClick={() => setIsSignatureModalOpen(false)} className="text-gray-400 hover:text-gray-600">
+                        <X className="w-6 h-6" />
+                    </button>
+                </div>
+                
+                <div className="border-2 border-gray-300 rounded-lg bg-white mb-4 overflow-hidden">
+                    <canvas
+                        ref={signatureCanvasRef}
+                        width={460}
+                        height={200}
+                        onMouseDown={startSigning}
+                        onMouseMove={drawSignature}
+                        onMouseUp={stopSigning}
+                        onMouseLeave={stopSigning}
+                        className="w-full h-full cursor-crosshair touch-none"
+                    />
+                </div>
+                
+                <div className="flex justify-between items-center">
+                    <button
+                        type="button"
+                        onClick={clearSignature}
+                        className="flex items-center gap-2 px-4 py-2 text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition"
+                    >
+                        <Eraser className="w-4 h-4" /> Limpar
+                    </button>
+                    <button
+                        type="button"
+                        onClick={handleSaveSignature}
+                        className="flex items-center gap-2 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
+                    >
+                        <Save className="w-4 h-4" /> Salvar Assinatura
+                    </button>
+                </div>
+            </div>
         </div>
       )}
     </div>

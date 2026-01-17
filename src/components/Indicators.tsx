@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { db } from './firebase';
 import { collection, getDocs, query, where, orderBy, limit, doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { BarChart3, Clock, Truck, Users, ArrowDownRight, Activity, Calendar, Building2, AlertTriangle, Timer, Maximize2, X } from 'lucide-react';
+import { BarChart3, Clock, Truck, Users, ArrowDownRight, Activity, Calendar, Building2, AlertTriangle, Timer, Maximize2, X, Download, FileText } from 'lucide-react';
 
 interface DashboardMetrics {
   vehiclesInside: number;
@@ -455,6 +455,403 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
               data
           });
       }
+  };
+
+  const generateOccurrencePDF = (occ: any) => {
+    const logo = localStorage.getItem('portal_custom_logo');
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) return;
+
+    const labels: Record<string, string> = {
+        radioHT: 'Rádio HT',
+        qtdBotons: 'Botons',
+        qtdCarregadores: 'Carregadores',
+        qtdCapaChuva: 'Capa de Chuva',
+        qtdPendRonda: 'Pendrive de Ronda',
+        qtdLanternas: 'Lanternas',
+        arma1: 'Arma 1',
+        arma2: 'Arma 2',
+        arma3: 'Arma 3',
+        arma4: 'Arma 4',
+        municoes: 'Munições'
+    };
+
+    const htmlContent = `
+      <html>
+        <head>
+          <title>Ocorrência - ${occ.title}</title>
+          <style>
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 40px; color: #333; max-width: 800px; margin: 0 auto; }
+            .header { display: flex; align-items: center; justify-content: space-between; border-bottom: 2px solid #3b82f6; padding-bottom: 20px; margin-bottom: 30px; }
+            .logo { max-height: 60px; max-width: 200px; object-fit: contain; }
+            .title-container { flex: 1; }
+            .title { font-size: 24px; font-weight: bold; color: #1f2937; margin: 0; }
+            .subtitle { color: #6b7280; font-size: 14px; margin-top: 5px; }
+            .section { margin-bottom: 25px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; page-break-inside: avoid; }
+            .section-header { background-color: #f3f4f6; padding: 10px 15px; font-weight: bold; border-bottom: 1px solid #e5e7eb; color: #374151; font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; }
+            .section-content { padding: 15px; }
+            .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; }
+            .field { margin-bottom: 5px; }
+            .label { font-size: 11px; color: #6b7280; text-transform: uppercase; font-weight: 600; margin-bottom: 2px; display: block; }
+            .value { font-size: 14px; color: #111827; font-weight: 500; }
+            .photos { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+            .photo { width: 180px; height: 180px; object-fit: cover; border-radius: 6px; border: 1px solid #ddd; }
+            .footer { margin-top: 50px; text-align: center; font-size: 11px; color: #9ca3af; border-top: 1px solid #eee; padding-top: 20px; }
+            @media print {
+                body { padding: 0; }
+                .section { break-inside: avoid; }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <div class="title-container">
+              <h1 class="title">Relatório de Ocorrência</h1>
+              <div class="subtitle">Gerado em ${new Date().toLocaleString('pt-BR')}</div>
+            </div>
+            ${logo ? `<img src="${logo}" class="logo" />` : ''}
+          </div>
+
+          <div class="section">
+            <div class="section-header">Detalhes Principais</div>
+            <div class="section-content">
+              <div class="field" style="margin-bottom: 15px;">
+                <span class="label">Título</span>
+                <div class="value" style="font-size: 16px;">${occ.title}</div>
+              </div>
+              <div class="field">
+                <span class="label">Descrição</span>
+                <div class="value" style="white-space: pre-wrap; line-height: 1.5;">${occ.description}</div>
+              </div>
+              <div class="grid" style="margin-top: 15px;">
+                 <div class="field"><span class="label">Data do Registro</span><div class="value">${new Date(occ.created_at).toLocaleString('pt-BR')}</div></div>
+              </div>
+            </div>
+          </div>
+
+          ${occ.vehicle ? `
+          <div class="section">
+            <div class="section-header">Veículo Envolvido</div>
+            <div class="section-content grid">
+              <div class="field"><span class="label">Placa</span><div class="value">${occ.vehicle.plate || '---'}</div></div>
+              <div class="field"><span class="label">Modelo</span><div class="value">${occ.vehicle.model || '---'}</div></div>
+              <div class="field"><span class="label">Cor</span><div class="value">${occ.vehicle.color || '---'}</div></div>
+              <div class="field"><span class="label">Empresa</span><div class="value">${occ.vehicle.company || '---'}</div></div>
+            </div>
+          </div>` : ''}
+
+          ${(occ.cargo_material || occ.weaponry) ? `
+          <div class="section">
+            <div class="section-header">Materiais e Armamento</div>
+            <div class="section-content grid">
+              ${occ.cargo_material ? Object.entries(occ.cargo_material).map(([k, v]) => `<div class="field"><span class="label">${labels[k] || k}</span><div class="value">${v || '---'}</div></div>`).join('') : ''}
+              ${occ.weaponry ? Object.entries(occ.weaponry).map(([k, v]) => `<div class="field"><span class="label">${labels[k] || k}</span><div class="value">${v || '---'}</div></div>`).join('') : ''}
+            </div>
+          </div>` : ''}
+
+          ${occ.photos && occ.photos.length > 0 ? `
+          <div class="section">
+            <div class="section-header">Evidências Fotográficas</div>
+            <div class="section-content">
+              <div class="photos">
+                ${occ.photos.map((p: string) => `<img src="${p}" class="photo" />`).join('')}
+              </div>
+            </div>
+          </div>` : ''}
+
+          ${occ.signature_url ? `
+          <div class="section">
+            <div class="section-header">Assinatura</div>
+            <div class="section-content">
+               <img src="${occ.signature_url}" style="max-height: 60px; max-width: 200px;" />
+               <div style="font-size: 10px; color: #666; margin-top: 5px;">
+                  ${occ.signature_by ? `<div>Assinado por: <strong>${occ.signature_by}</strong></div>` : ''}
+                  ${occ.signature_at ? `<div>Em: ${new Date(occ.signature_at).toLocaleString('pt-BR')}</div>` : ''}
+               </div>
+            </div>
+          </div>` : ''}
+
+          <div class="footer">
+            Documento gerado eletronicamente pelo Sistema de Portaria.<br/>
+            ID da Ocorrência: ${occ.id}
+          </div>
+          <script>
+            window.onload = function() { window.print(); }
+          </script>
+        </body>
+      </html>
+    `;
+
+    printWindow.document.write(htmlContent);
+    printWindow.document.close();
+  };
+
+  const generateAllOccurrencesPDF = (occurrences: any[], companyName: string) => {
+    const logo = localStorage.getItem('portal_custom_logo');
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) return;
+
+    const labels: Record<string, string> = {
+        radioHT: 'Rádio HT',
+        qtdBotons: 'Botons',
+        qtdCarregadores: 'Carregadores',
+        qtdCapaChuva: 'Capa de Chuva',
+        qtdPendRonda: 'Pendrive de Ronda',
+        qtdLanternas: 'Lanternas',
+        arma1: 'Arma 1',
+        arma2: 'Arma 2',
+        arma3: 'Arma 3',
+        arma4: 'Arma 4',
+        municoes: 'Munições'
+    };
+
+    const htmlContent = `
+      <html>
+        <head>
+          <title>Relatório de Ocorrências - ${companyName}</title>
+          <style>
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 40px; color: #333; max-width: 800px; margin: 0 auto; }
+            .header { display: flex; align-items: center; justify-content: space-between; border-bottom: 2px solid #3b82f6; padding-bottom: 20px; margin-bottom: 30px; }
+            .logo { max-height: 60px; max-width: 200px; object-fit: contain; }
+            .title-container { flex: 1; }
+            .title { font-size: 24px; font-weight: bold; color: #1f2937; margin: 0; }
+            .subtitle { color: #6b7280; font-size: 14px; margin-top: 5px; }
+            .occurrence-container { margin-bottom: 40px; page-break-inside: avoid; border-bottom: 1px dashed #ccc; padding-bottom: 20px; }
+            .occurrence-container:last-child { border-bottom: none; }
+            .section { margin-bottom: 15px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
+            .section-header { background-color: #f3f4f6; padding: 8px 12px; font-weight: bold; border-bottom: 1px solid #e5e7eb; color: #374151; font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; }
+            .section-content { padding: 12px; }
+            .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+            .field { margin-bottom: 5px; }
+            .label { font-size: 10px; color: #6b7280; text-transform: uppercase; font-weight: 600; margin-bottom: 2px; display: block; }
+            .value { font-size: 13px; color: #111827; font-weight: 500; }
+            .photos { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+            .photo { width: 120px; height: 120px; object-fit: cover; border-radius: 6px; border: 1px solid #ddd; }
+            .footer { margin-top: 50px; text-align: center; font-size: 11px; color: #9ca3af; border-top: 1px solid #eee; padding-top: 20px; }
+            @media print {
+                body { padding: 0; }
+                .occurrence-container { break-inside: avoid; }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <div class="title-container">
+              <h1 class="title">Relatório de Ocorrências</h1>
+              <div class="subtitle">Empresa: ${companyName}</div>
+              <div class="subtitle">Gerado em ${new Date().toLocaleString('pt-BR')}</div>
+            </div>
+            ${logo ? `<img src="${logo}" class="logo" />` : ''}
+          </div>
+
+          ${occurrences.map(occ => `
+            <div class="occurrence-container">
+              <h2 style="font-size: 18px; margin-bottom: 10px; color: #1f2937;">${occ.title} <span style="font-size: 12px; font-weight: normal; color: #6b7280;">(${new Date(occ.created_at).toLocaleString('pt-BR')})</span></h2>
+              
+              <div class="section">
+                <div class="section-header">Descrição</div>
+                <div class="section-content">
+                  <div class="value" style="white-space: pre-wrap; line-height: 1.5;">${occ.description}</div>
+                </div>
+              </div>
+
+              ${occ.vehicle ? `
+              <div class="section">
+                <div class="section-header">Veículo Envolvido</div>
+                <div class="section-content grid">
+                  <div class="field"><span class="label">Placa</span><div class="value">${occ.vehicle.plate || '---'}</div></div>
+                  <div class="field"><span class="label">Modelo</span><div class="value">${occ.vehicle.model || '---'}</div></div>
+                  <div class="field"><span class="label">Cor</span><div class="value">${occ.vehicle.color || '---'}</div></div>
+                  <div class="field"><span class="label">Empresa</span><div class="value">${occ.vehicle.company || '---'}</div></div>
+                </div>
+              </div>` : ''}
+
+              ${(occ.cargo_material || occ.weaponry) ? `
+              <div class="section">
+                <div class="section-header">Materiais e Armamento</div>
+                <div class="section-content grid">
+                  ${occ.cargo_material ? Object.entries(occ.cargo_material).map(([k, v]) => `<div class="field"><span class="label">${labels[k] || k}</span><div class="value">${v || '---'}</div></div>`).join('') : ''}
+                  ${occ.weaponry ? Object.entries(occ.weaponry).map(([k, v]) => `<div class="field"><span class="label">${labels[k] || k}</span><div class="value">${v || '---'}</div></div>`).join('') : ''}
+                </div>
+              </div>` : ''}
+
+              ${occ.photos && occ.photos.length > 0 ? `
+              <div class="section">
+                <div class="section-header">Evidências Fotográficas</div>
+                <div class="section-content">
+                  <div class="photos">
+                    ${occ.photos.map((p: string) => `<img src="${p}" class="photo" />`).join('')}
+                  </div>
+                </div>
+              </div>` : ''}
+
+              ${occ.signature_url ? `
+              <div class="section">
+                <div class="section-header">Assinatura</div>
+                <div class="section-content">
+                   <img src="${occ.signature_url}" style="max-height: 60px; max-width: 200px;" />
+                   <div style="font-size: 10px; color: #666; margin-top: 5px;">
+                      ${occ.signature_by ? `<div>Assinado por: <strong>${occ.signature_by}</strong></div>` : ''}
+                      ${occ.signature_at ? `<div>Em: ${new Date(occ.signature_at).toLocaleString('pt-BR')}</div>` : ''}
+                   </div>
+                </div>
+              </div>` : ''}
+            </div>
+          `).join('')}
+
+          <div class="footer">
+            Documento gerado eletronicamente pelo Sistema de Portaria.<br/>
+            Total de Ocorrências: ${occurrences.length}
+          </div>
+          <script>
+            window.onload = function() { window.print(); }
+          </script>
+        </body>
+      </html>
+    `;
+
+    printWindow.document.write(htmlContent);
+    printWindow.document.close();
+  };
+
+  const generateEntriesPDF = (entriesList: any[]) => {
+    const logo = localStorage.getItem('portal_custom_logo');
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) return;
+
+    // Agrupar entradas por data para corresponder ao layout de EntriesList
+    const groupedEntries = entriesList.reduce((acc, entry) => {
+        const entryDate = new Date(entry.entry_time);
+        const date = entryDate.toLocaleDateString('pt-BR');
+        const weekday = entryDate.toLocaleDateString('pt-BR', { weekday: 'long' });
+        const capitalizedWeekday = weekday.charAt(0).toUpperCase() + weekday.slice(1);
+        const lastGroup = acc[acc.length - 1];
+        
+        if (lastGroup && lastGroup.date === date) {
+          lastGroup.items.push(entry);
+        } else {
+          acc.push({ date, weekday: capitalizedWeekday, items: [entry] });
+        }
+        return acc;
+    }, [] as { date: string; weekday: string; items: any[] }[]);
+
+    const htmlContent = `
+      <html>
+        <head>
+          <title>Relatório de Entradas e Saídas</title>
+          <style>
+            @page { size: landscape; margin: 10mm; }
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; color: #111; font-size: 10px; -webkit-print-color-adjust: exact; }
+            .header { display: flex; align-items: center; justify-content: space-between; border-bottom: 2px solid #3b82f6; padding-bottom: 10px; margin-bottom: 20px; }
+            .logo { max-height: 50px; max-width: 150px; object-fit: contain; }
+            .title-container { flex: 1; }
+            .title { font-size: 20px; font-weight: bold; color: #1f2937; margin: 0; }
+            .subtitle { color: #6b7280; font-size: 12px; margin-top: 2px; }
+            
+            table { width: 100%; border-collapse: collapse; margin-bottom: 20px; table-layout: fixed; }
+            th { background-color: #f9fafb; text-align: left; padding: 8px 4px; border-bottom: 1px solid #e5e7eb; color: #6b7280; font-weight: 600; font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; }
+            td { padding: 8px 4px; border-bottom: 1px solid #f3f4f6; color: #1f2937; vertical-align: top; word-wrap: break-word; }
+            
+            .group-header { background-color: #f3f4f6; font-weight: bold; color: #374151; padding: 6px 10px; font-size: 11px; border-top: 1px solid #e5e7eb; border-bottom: 1px solid #e5e7eb; }
+            
+            .status-badge { padding: 2px 6px; border-radius: 9999px; font-size: 9px; font-weight: bold; display: inline-block; }
+            .status-open { background-color: #dcfce7; color: #166534; }
+            .status-closed { background-color: #fee2e2; color: #991b1b; }
+            
+            .plate { font-weight: bold; background-color: #f3f4f6; padding: 2px 4px; border-radius: 4px; border: 1px solid #e5e7eb; }
+            .driver-info { display: flex; flex-direction: column; }
+            .driver-name { font-weight: 600; }
+            .driver-doc { color: #6b7280; font-size: 9px; }
+            
+            .driver-photo { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; border: 1px solid #e5e7eb; }
+            .evidence-photo { width: 36px; height: 36px; border-radius: 4px; object-fit: cover; border: 1px solid #e5e7eb; }
+            .evidence-container { display: flex; gap: 4px; }
+            .footer { margin-top: 30px; text-align: center; font-size: 9px; color: #9ca3af; border-top: 1px solid #eee; padding-top: 10px; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <div class="title-container">
+              <h1 class="title">Relatório de Entradas e Saídas</h1>
+              <div class="subtitle">Gerado em ${new Date().toLocaleString('pt-BR')}</div>
+              <div class="subtitle">Total de Registros: ${entriesList.length}</div>
+            </div>
+            ${logo ? `<img src="${logo}" class="logo" />` : ''}
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 10%">Empresa</th>
+                <th style="width: 8%">Placa</th>
+                <th style="width: 8%">Marca</th>
+                <th style="width: 10%">Modelo</th>
+                <th style="width: 6%">Cor</th>
+                <th style="width: 15%">Observação</th>
+                <th style="width: 15%">Motorista</th>
+                <th style="width: 10%">Usuário</th>
+                <th style="width: 9%">Entrada</th>
+                <th style="width: 9%">Saída</th>
+                <th style="width: 10%">Evidências</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${groupedEntries.map(group => `
+                <tr>
+                  <td colspan="11" class="group-header">
+                    ${group.date} - <span style="font-weight: normal;">${group.weekday}</span> <span style="font-size: 9px; color: #6b7280; margin-left: 5px;">(${group.items.length})</span>
+                  </td>
+                </tr>
+                ${group.items.map(entry => `
+                  <tr>
+                    <td>${tenants.find(t => t.id === entry.tenantId)?.name || '---'}</td>
+                    <td><span class="plate">${entry.cached_data?.vehicle_plate || '---'}</span></td>
+                    <td>${entry.cached_data?.vehicle_brand || ''}</td>
+                    <td>${entry.cached_data?.vehicle_model || ''}</td>
+                    <td>${entry.cached_data?.vehicle_color || ''}</td>
+                    <td>${entry.notes || ''}</td>
+                    <td>
+                      <div class="driver-info">
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            ${entry.cached_data?.driver_photo_url ? `<img src="${entry.cached_data.driver_photo_url}" class="driver-photo" />` : ''}
+                            <div>
+                                <span class="driver-name" style="display: block;">${entry.cached_data?.driver_name || '---'}</span>
+                                <span class="driver-doc" style="display: block;">${entry.cached_data?.driver_document || ''}</span>
+                            </div>
+                        </div>
+                      </div>
+                    </td>
+                    <td>---</td>
+                    <td>${new Date(entry.entry_time).toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit'})}</td>
+                    <td>
+                      ${entry.exit_time 
+                          ? `<span class="status-badge status-closed">${new Date(entry.exit_time).toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit'})}</span>` 
+                          : '<span class="status-badge status-open">NO PÁTIO</span>'}
+                    </td>
+                    <td>
+                        <div class="evidence-container">
+                            ${entry.vehicle_photo_url ? `<img src="${entry.vehicle_photo_url}" class="evidence-photo" />` : ''}
+                            ${entry.plate_photo_url ? `<img src="${entry.plate_photo_url}" class="evidence-photo" />` : ''}
+                        </div>
+                    </td>
+                  </tr>
+                `).join('')}
+              `).join('')}
+            </tbody>
+          </table>
+
+          <div class="footer">
+            Documento gerado eletronicamente pelo Sistema de Portaria.
+          </div>
+          <script>
+            window.onload = function() { window.print(); }
+          </script>
+        </body>
+      </html>
+    `;
+
+    printWindow.document.write(htmlContent);
+    printWindow.document.close();
   };
 
   const formatDateTime = (dateString: string) => {
@@ -1174,13 +1571,27 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                 <BarChart3 className="w-5 h-5 text-gray-500" /> Comparativo de Registros por Empresa
               </h3>
               <div className="flex items-center justify-end gap-4 mb-4">
-                 <div className="flex items-center gap-1">
+                 <div 
+                   className="flex items-center gap-1 cursor-pointer hover:opacity-80 transition-opacity group"
+                   onClick={() => {
+                     const entries = Object.entries(allData.entries).flatMap(([tid, list]) => list.map(e => ({...e, tenantId: tid}))).sort((a, b) => new Date(b.entry_time).getTime() - new Date(a.entry_time).getTime());
+                     generateEntriesPDF(entries);
+                   }}
+                   title="Gerar Relatório de Entradas (PDF)"
+                 >
                     <div className="w-3 h-3 bg-blue-600 rounded-sm"></div>
-                    <span className="text-xs text-gray-600">Entradas</span>
+                    <span className="text-xs text-gray-600 group-hover:text-blue-600 group-hover:underline decoration-dotted underline-offset-4">Entradas</span>
                  </div>
-                 <div className="flex items-center gap-1">
+                 <div 
+                   className="flex items-center gap-1 cursor-pointer hover:opacity-80 transition-opacity group"
+                   onClick={() => {
+                     const occurrences = Object.values(allData.occurrences).flat().sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+                     generateAllOccurrencesPDF(occurrences, 'Todas as Empresas');
+                   }}
+                   title="Gerar Relatório de Ocorrências (PDF)"
+                 >
                     <div className="w-3 h-3 bg-red-500 rounded-sm"></div>
-                    <span className="text-xs text-gray-600">Ocorrências</span>
+                    <span className="text-xs text-gray-600 group-hover:text-red-600 group-hover:underline decoration-dotted underline-offset-4">Ocorrências</span>
                  </div>
               </div>
               <div className="h-64 flex items-end gap-2 sm:gap-4 pt-4 border-b border-gray-100">
@@ -1374,9 +1785,21 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                     {selectedCompanyDetails.type === 'entries' ? <Truck className="w-6 h-6 text-blue-600" /> : <AlertTriangle className="w-6 h-6 text-red-600" />}
                     {selectedCompanyDetails.type === 'entries' ? 'Registros de Entrada' : 'Ocorrências'} - <span className="text-gray-600 font-normal">{selectedCompanyDetails.name}</span>
                 </h3>
-                <button onClick={() => setSelectedCompanyDetails(null)} className="p-2 hover:bg-gray-200 rounded-full transition-colors">
-                    <X className="w-6 h-6 text-gray-500" />
-                </button>
+                <div className="flex items-center gap-2">
+                    {selectedCompanyDetails.type === 'occurrences' && (
+                        <button 
+                            onClick={() => generateAllOccurrencesPDF(selectedCompanyDetails.data, selectedCompanyDetails.name)}
+                            className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
+                            title="Gerar PDF com todas as ocorrências listadas"
+                        >
+                            <Download className="w-4 h-4" />
+                            Relatório Completo
+                        </button>
+                    )}
+                    <button onClick={() => setSelectedCompanyDetails(null)} className="p-2 hover:bg-gray-200 rounded-full transition-colors">
+                        <X className="w-6 h-6 text-gray-500" />
+                    </button>
+                </div>
              </div>
              <div className="flex-1 overflow-y-auto p-6 bg-gray-50/50">
                 {selectedCompanyDetails.type === 'entries' ? (
@@ -1405,12 +1828,31 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                 ) : (
                     <div className="space-y-3">
                         {selectedCompanyDetails.data.map((occ: any) => (
-                            <div key={occ.id} className="bg-white border-l-4 border-red-500 rounded-r-lg p-4 shadow-sm hover:shadow transition-all">
+                            <div 
+                              key={occ.id} 
+                              className="bg-white border-l-4 border-red-500 rounded-r-lg p-4 shadow-sm hover:shadow transition-all cursor-pointer group"
+                              onClick={() => generateOccurrencePDF(occ)}
+                              title="Clique para gerar PDF da Ocorrência"
+                            >
                                 <div className="flex justify-between items-start mb-2">
-                                    <h4 className="font-bold text-gray-900">{occ.title}</h4>
+                                    <h4 className="font-bold text-gray-900 group-hover:text-red-600 transition-colors">{occ.title}</h4>
                                     <span className="text-xs text-gray-500">{formatDateTime(occ.created_at)}</span>
                                 </div>
-                                <p className="text-sm text-gray-700 whitespace-pre-wrap">{occ.description}</p>
+                                <div className="flex justify-between items-start gap-4">
+                                    <p className="text-sm text-gray-700 whitespace-pre-wrap line-clamp-3 flex-1">{occ.description}</p>
+                                    {occ.signature_url && (
+                                      <div className="flex flex-col items-end shrink-0 bg-white p-2 rounded border border-gray-200 shadow-sm">
+                                         <img src={occ.signature_url} alt="Assinatura" className="h-12 object-contain" />
+                                         <div className="text-right mt-0.5">
+                                            {occ.signature_by && <p className="text-[9px] text-gray-600 font-bold">{occ.signature_by}</p>}
+                                            <p className="text-[9px] text-gray-400">{occ.signature_at ? formatDateTime(occ.signature_at) : ''}</p>
+                                         </div>
+                                      </div>
+                                    )}
+                                </div>
+                                <div className="mt-3 text-xs text-blue-600 font-medium opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
+                                   <FileText className="w-3 h-3" /> Gerar Relatório PDF
+                                </div>
                             </div>
                         ))}
                     </div>
