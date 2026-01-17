@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { db } from './firebase';
 import { doc, updateDoc, setDoc, getDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { LogOut, Users, ClipboardList, UserPlus, ChevronLeft, ChevronRight, Camera, Shield, ArrowRightLeft, Truck, BarChart3, CarFront, Building2, LayoutGrid, AlertTriangle } from 'lucide-react';
+import { LogOut, Users, ClipboardList, UserPlus, ChevronLeft, ChevronRight, Camera, Shield, ArrowRightLeft, Truck, BarChart3, CarFront, Building2, LayoutGrid, AlertTriangle, Menu } from 'lucide-react';
 import RegisterEntry from './RegisterEntry';
 import EntriesList from './EntriesList';
 import UserManagement from './UserManagement';
@@ -505,10 +505,10 @@ export default function Dashboard() {
           </button>
         </nav>
 
-        <div className="p-4 border-t" style={{ borderColor: `hsl(${sidebarHue}, 65%, 30%)` }}>
-          {!isSidebarCollapsed && (
-            <div className="mb-4 px-2">
-               <label className="text-[10px] uppercase tracking-wider text-white/50 font-bold mb-2 block">Cor do Menu</label>
+        {!isSidebarCollapsed && (
+          <div className="p-4 border-t" style={{ borderColor: `hsl(${sidebarHue}, 65%, 30%)` }}>
+            <div className="px-2">
+               <label className="text-[10px] uppercase tracking-wider text-white/50 font-bold mb-0 block">Cor do Menu</label>
                <input 
                  type="range" 
                  min="0" 
@@ -522,22 +522,22 @@ export default function Dashboard() {
                  className="w-full h-1.5 bg-black/20 rounded-lg appearance-none cursor-pointer accent-white"
                />
             </div>
-          )}
-          <button
-            onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
-            className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-2 rounded-lg text-white/70 hover:bg-white/10 hover:text-white transition-colors`}
-            title={isSidebarCollapsed ? "Expandir Menu" : "Recolher Menu"}
-          >
-            {isSidebarCollapsed ? <ChevronRight className="w-5 h-5" /> : <ChevronLeft className="w-5 h-5" />}
-            {!isSidebarCollapsed && <span>Recolher Menu</span>}
-          </button>
-        </div>
+          </div>
+        )}
       </aside>
 
       {/* Main Content */}
       <div className={`flex-1 flex flex-col ${isSidebarCollapsed ? 'ml-20' : 'ml-64'} transition-all duration-300 min-h-screen`}>
         {/* Header */}
-        <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-end px-8 shadow-sm sticky top-0 z-10">
+        <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-8 shadow-sm sticky top-0 z-10">
+            <button
+              onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+              className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 transition-colors"
+              title={isSidebarCollapsed ? "Expandir Menu" : "Recolher Menu"}
+            >
+              <Menu className="w-6 h-6" />
+            </button>
+
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-3">
                 <div className="text-right hidden sm:block">

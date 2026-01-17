@@ -15,7 +15,7 @@ import {
   QueryDocumentSnapshot 
 } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { LogOut, Clock, Calendar, Image as ImageIcon, ChevronDown, ChevronRight, X, User, Download } from 'lucide-react';
+import { LogOut, Clock, Calendar, Image as ImageIcon, ChevronDown, ChevronRight, X, User, Download, Building2 } from 'lucide-react';
 
 interface EntryWithDetails {
   id: string;
@@ -25,6 +25,7 @@ interface EntryWithDetails {
   plate_photo_url: string;
   notes: string;
   registered_by_name?: string;
+  tenant_name?: string;
   driver: {
     name: string;
     document: string;
@@ -44,7 +45,6 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
   // Contexto de autenticação
   const { user, userProfile } = useAuth();
   const [entries, setEntries] = useState<EntryWithDetails[]>([]);
-  const [tenantName, setTenantName] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
@@ -52,26 +52,60 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
   const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-
-  // Identifica o ID da empresa (Tenant) para uso em todo o componente
-  const tenantId = propTenantId || (userProfile as any)?.tenantId || user?.uid;
+  
+  const [tenants, setTenants] = useState<{id: string, name: string}[]>([]);
+  const [selectedTenantId, setSelectedTenantId] = useState<string>('');
+  const [entriesPerTenant, setEntriesPerTenant] = useState<Record<string, EntryWithDetails[]>>({});
 
   useEffect(() => {
-    const fetchTenantName = async () => {
-      if (tenantId) {
-        try {
-          const docRef = doc(db, 'tenants', tenantId);
-          const docSnap = await getDoc(docRef);
-          if (docSnap.exists()) {
-            setTenantName(docSnap.data().name || 'Empresa sem nome');
+    const initTenants = async () => {
+      if (!user?.uid) return;
+      
+      try {
+        const allowedTenants = (userProfile as any)?.allowedTenants;
+        let list: {id: string, name: string}[] = [];
+
+        if (allowedTenants && Array.isArray(allowedTenants) && allowedTenants.length > 0) {
+          const promises = allowedTenants.map(id => getDoc(doc(db, 'tenants', id)));
+          const docs = await Promise.all(promises);
+          list = docs.filter(d => d.exists()).map(d => ({ id: d.id, name: d.data()?.name || 'Empresa sem nome' }));
+        } else {
+          const q = query(collection(db, 'tenants'), where('created_by', '==', user.uid));
+          const snapshot = await getDocs(q);
+          if (!snapshot.empty) {
+            list = snapshot.docs.map(doc => ({ id: doc.id, name: doc.data().name || 'Empresa sem nome' }));
           }
-        } catch (error) {
-          console.error("Erro ao buscar nome da empresa:", error);
         }
+
+        if (list.length === 0 && (userProfile as any)?.tenantId) {
+           const tId = (userProfile as any).tenantId;
+           const docSnap = await getDoc(doc(db, 'tenants', tId));
+           if (docSnap.exists()) {
+             list.push({ id: docSnap.id, name: docSnap.data().name || 'Minha Empresa' });
+           }
+        }
+
+        list = list.filter((v, i, a) => a.findIndex(t => t.id === v.id) === i);
+        setTenants(list);
+
+        // Default selection logic
+        if (list.length > 1) {
+            setSelectedTenantId('all');
+        } else if (propTenantId) {
+            setSelectedTenantId(propTenantId);
+        } else if (list.length > 0) {
+            setSelectedTenantId(list[0].id);
+        }
+      } catch (error) {
+        console.error("Erro ao buscar empresas:", error);
       }
     };
-    fetchTenantName();
-  }, [tenantId]);
+    
+    initTenants();
+  }, [user, userProfile, propTenantId]);
+
+  // Reset entries map when filter changes
+  useEffect(() => setEntriesPerTenant({}), [selectedTenantId]);
 
   useEffect(() => {
     if (!user) {
@@ -85,35 +119,34 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
   }, [user]);
 
   useEffect(() => {
-    let unsubscribe: () => void;
+    let unsubscribes: (() => void)[] = [];
 
     const fetchEntries = async () => {
-      if (!tenantId) return;
+      if (!selectedTenantId && tenants.length === 0) return;
+      
+      const targetIds = selectedTenantId === 'all' ? tenants.map(t => t.id) : [selectedTenantId || tenants[0]?.id].filter(Boolean);
+      
+      if (targetIds.length === 0) return;
       
       // Se for a primeira carga (limitCount == ITEMS_PER_PAGE), mostra loading principal
       if (limitCount === ITEMS_PER_PAGE) setLoading(true);
       else setLoadingMore(true);
 
-      // Busca na subcoleção específica do tenant: tenants/{tenantId}/entries
-      let q = query(
-        collection(db, 'tenants', tenantId, 'entries'), 
-        orderBy('entry_time', 'desc'), 
-        limit(limitCount)
-      );
+      unsubscribes = targetIds.map(tid => {
+        const q = query(
+          collection(db, 'tenants', tid, 'entries'), 
+          orderBy('entry_time', 'desc'), 
+          limit(limitCount)
+        );
 
-      unsubscribe = onSnapshot(q, async (querySnapshot) => {
+        return onSnapshot(q, async (querySnapshot) => {
         try {
           if (querySnapshot.empty) {
-            setEntries([]);
-            setHasMore(false);
-            setLoading(false);
-            setLoadingMore(false);
+            setEntriesPerTenant(prev => ({ ...prev, [tid]: [] }));
             return;
           }
 
-          // Verifica se tem mais registros para carregar
-          setHasMore(querySnapshot.docs.length >= limitCount);
-
+          const tenantName = tenants.find(t => t.id === tid)?.name || 'Empresa';
           // Extrair IDs para busca otimizada
           const entriesRaw = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
           
@@ -136,8 +169,8 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
           };
 
           const [driversData, vehiclesData, usersData] = await Promise.all([
-            fetchDocsByIds(`tenants/${tenantId}/drivers`, driverIds),
-            fetchDocsByIds(`tenants/${tenantId}/vehicles`, vehicleIds),
+            fetchDocsByIds(`tenants/${tid}/drivers`, driverIds),
+            fetchDocsByIds(`tenants/${tid}/vehicles`, vehicleIds),
             fetchDocsByIds('profiles', userIds)
           ]);
 
@@ -154,6 +187,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
               return {
                 ...entry,
                 registered_by_name: userData?.name || '---',
+                tenant_name: tenantName,
                 driver: { 
                   name: entry.cached_data.driver_name, 
                   document: entry.cached_data.driver_document,
@@ -171,32 +205,43 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
             return {
               ...entry,
               registered_by_name: userData?.name || '---',
+              tenant_name: tenantName,
               driver: driverData || { name: 'Desconhecido', document: '---' },
               vehicle: vehicleData || { plate: '---', brand: '', model: '', color: '' }
             } as EntryWithDetails;
           });
 
-          setEntries(newEntries);
+          setEntriesPerTenant(prev => ({ ...prev, [tid]: newEntries }));
         } catch (err: any) {
           console.error('Erro ao processar snapshot:', err);
-          setError('Erro ao atualizar registros em tempo real.');
-        } finally {
-          setLoading(false);
-          setLoadingMore(false);
         }
       }, (err) => {
         console.error("Erro no listener de entradas:", err);
-        setError("Erro de conexão com o banco de dados.");
-        setLoading(false);
+      });
       });
     };
 
     fetchEntries();
 
     return () => {
-      if (unsubscribe) unsubscribe();
+      unsubscribes.forEach(u => u());
     };
-  }, [tenantId, limitCount]);
+  }, [selectedTenantId, limitCount, tenants]);
+
+  // Combine and sort entries from all tenants
+  useEffect(() => {
+    const all = Object.values(entriesPerTenant).flat().sort((a, b) => new Date(b.entry_time).getTime() - new Date(a.entry_time).getTime());
+    setEntries(all);
+    
+    // Simple heuristic for hasMore: if we have at least limitCount items, assume there might be more.
+    // For exact pagination with multiple streams, it's complex, but this works for "Load More".
+    if (all.length > 0) {
+        setHasMore(true);
+    }
+    
+    setLoading(false);
+    setLoadingMore(false);
+  }, [entriesPerTenant]);
 
   const toggleGroup = (date: string) => {
     setCollapsedGroups(prev => {
@@ -210,10 +255,10 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
     });
   };
 
-  const handleRegisterExit = async (entryId: string) => {
-    if (!tenantId) return;
+  const handleRegisterExit = async (entryId: string, entryTenantId?: string) => {
+    const tid = entryTenantId || selectedTenantId;
     try {
-      await updateDoc(doc(db, 'tenants', tenantId, 'entries', entryId), {
+      await updateDoc(doc(db, 'tenants', tid, 'entries', entryId), {
         exit_time: new Date().toISOString(),
         exit_registered_by: user?.uid,
       });
@@ -236,7 +281,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
     const csvContent = [
       ['Empresa', 'Placa', 'Marca', 'Modelo', 'Cor', 'Observação', 'Motorista', 'Documento', 'Usuário', 'Entrada', 'Saída'],
       ...entries.map(entry => [
-        tenantName,
+        entry.tenant_name || '---',
         entry.vehicle.plate,
         entry.vehicle.brand,
         entry.vehicle.model,
@@ -308,7 +353,27 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
   return (
     <div>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-        <h2 className="text-2xl font-bold text-gray-800">Registros de Entrada e Saída</h2>
+        <div className="flex items-center gap-2">
+          <h2 className="text-2xl font-bold text-gray-800">Registros de Entrada e Saída</h2>
+          <span className="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-0.5 rounded-full">{entries.length}</span>
+        </div>
+        
+        {tenants.length > 1 && (
+            <div className="flex items-center bg-white border border-gray-300 rounded-lg px-3 py-2 shadow-sm">
+              <Building2 className="w-4 h-4 text-gray-500 mr-2" />
+              <select 
+                value={selectedTenantId}
+                onChange={(e) => setSelectedTenantId(e.target.value)}
+                className="bg-transparent border-none text-sm text-gray-700 focus:ring-0 cursor-pointer outline-none min-w-[150px]"
+              >
+                <option value="all">Todas as Empresas</option>
+                {tenants.map(t => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+            </div>
+        )}
+
         <button
           onClick={handleExport}
           disabled={entries.length === 0}
@@ -372,7 +437,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
                   {!collapsedGroups.has(group.date) && group.items.map((entry) => (
                 <tr key={entry.id} className={!entry.exit_time ? 'bg-green-50/30' : 'hover:bg-gray-50'}>
                   <td className="px-6 py-2 whitespace-nowrap">
-                    <span className="text-sm font-medium text-gray-900">{tenantName}</span>
+                    <span className="text-sm font-medium text-gray-900">{entry.tenant_name}</span>
                   </td>
                   <td className="px-6 py-2 whitespace-nowrap">
                     <span className="text-sm font-bold text-gray-900">{entry.vehicle.plate}</span>
@@ -458,7 +523,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
                   <td className="px-6 py-2 whitespace-nowrap">
                     {!entry.exit_time ? (
                       <button
-                        onClick={() => handleRegisterExit(entry.id)}
+                        onClick={() => handleRegisterExit(entry.id, tenants.find(t => t.name === entry.tenant_name)?.id)}
                         className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 shadow-sm transition-colors"
                       >
                         <LogOut className="w-3 h-3 mr-1.5" />
