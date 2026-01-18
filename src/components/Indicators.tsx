@@ -481,24 +481,27 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
         <head>
           <title>Ocorrência - ${occ.title}</title>
           <style>
-            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 40px; color: #333; max-width: 800px; margin: 0 auto; }
-            .header { display: flex; align-items: center; justify-content: space-between; border-bottom: 2px solid #3b82f6; padding-bottom: 20px; margin-bottom: 30px; }
-            .logo { max-height: 60px; max-width: 200px; object-fit: contain; }
+            * { box-sizing: border-box; }
+            html, body { height: 100%; margin: 0; padding: 0; }
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 15px; padding-bottom: 35px; color: #333; max-width: 800px; margin: 0 auto; display: flex; flex-direction: column; }
+            .header { display: flex; align-items: center; justify-content: space-between; border-bottom: 2px solid #3b82f6; padding-bottom: 5px; margin-bottom: 10px; flex-shrink: 0; }
+            .logo { max-height: 50px; max-width: 150px; object-fit: contain; }
             .title-container { flex: 1; }
-            .title { font-size: 24px; font-weight: bold; color: #1f2937; margin: 0; }
-            .subtitle { color: #6b7280; font-size: 14px; margin-top: 5px; }
-            .section { margin-bottom: 25px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; page-break-inside: avoid; }
-            .section-header { background-color: #f3f4f6; padding: 10px 15px; font-weight: bold; border-bottom: 1px solid #e5e7eb; color: #374151; font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; }
-            .section-content { padding: 15px; }
-            .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; }
-            .field { margin-bottom: 5px; }
-            .label { font-size: 11px; color: #6b7280; text-transform: uppercase; font-weight: 600; margin-bottom: 2px; display: block; }
-            .value { font-size: 14px; color: #111827; font-weight: 500; }
-            .photos { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
-            .photo { width: 180px; height: 180px; object-fit: cover; border-radius: 6px; border: 1px solid #ddd; }
-            .footer { margin-top: 50px; text-align: center; font-size: 11px; color: #9ca3af; border-top: 1px solid #eee; padding-top: 20px; }
+            .title { font-size: 20px; font-weight: bold; color: #1f2937; margin: 0; }
+            .subtitle { color: #6b7280; font-size: 12px; margin-top: 2px; }
+            .section { margin-bottom: 10px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; page-break-inside: avoid; flex-shrink: 0; }
+            .section-header { background-color: #f3f4f6; padding: 6px 10px; font-weight: bold; border-bottom: 1px solid #e5e7eb; color: #374151; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+            .section-content { padding: 8px; }
+            .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+            .field { margin-bottom: 4px; }
+            .label { font-size: 9px; color: #6b7280; text-transform: uppercase; font-weight: 600; margin-bottom: 1px; display: block; }
+            .value { font-size: 11px; color: #111827; font-weight: 500; }
+            .photos { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 5px; }
+            .photo { flex: 1; min-width: 150px; height: 280px; object-fit: cover; border-radius: 6px; border: 1px solid #ddd; }
+            .footer { position: fixed; bottom: 0; left: 0; width: 100%; text-align: center; font-size: 9px; color: #9ca3af; border-top: 1px solid #eee; padding: 5px 0; background: #fff; }
             @media print {
-                body { padding: 0; }
+                html, body { height: 100%; }
+                body { padding: 0; padding-bottom: 35px; }
                 .section { break-inside: avoid; }
             }
           </style>
@@ -512,19 +515,22 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
             ${logo ? `<img src="${logo}" class="logo" />` : ''}
           </div>
 
-          <div class="section">
+          <div class="section" style="flex: 1; display: flex; flex-direction: column;">
             <div class="section-header">Detalhes Principais</div>
-            <div class="section-content">
-              <div class="field" style="margin-bottom: 15px;">
-                <span class="label">Título</span>
-                <div class="value" style="font-size: 16px;">${occ.title}</div>
+            <div class="section-content" style="flex: 1;">
+              <div class="grid" style="grid-template-columns: 3fr 1fr; margin-bottom: 10px;">
+                <div class="field">
+                  <span class="label">Título</span>
+                  <div class="value" style="font-size: 16px;">${occ.title}</div>
+                </div>
+                <div class="field">
+                   <span class="label">Data do Registro</span>
+                   <div class="value">${new Date(occ.created_at).toLocaleString('pt-BR')}</div>
+                </div>
               </div>
-              <div class="field">
+              <div class="field" style="height: 100%; display: flex; flex-direction: column;">
                 <span class="label">Descrição</span>
-                <div class="value" style="white-space: pre-wrap; line-height: 1.5;">${occ.description}</div>
-              </div>
-              <div class="grid" style="margin-top: 15px;">
-                 <div class="field"><span class="label">Data do Registro</span><div class="value">${new Date(occ.created_at).toLocaleString('pt-BR')}</div></div>
+                <div class="value" style="white-space: pre-wrap; line-height: 1.5; flex: 1;">${occ.description}</div>
               </div>
             </div>
           </div>
@@ -543,7 +549,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
           ${(occ.cargo_material || occ.weaponry) ? `
           <div class="section">
             <div class="section-header">Materiais e Armamento</div>
-            <div class="section-content grid">
+            <div class="section-content grid" style="grid-template-columns: repeat(6, 1fr);">
               ${occ.cargo_material ? Object.entries(occ.cargo_material).map(([k, v]) => `<div class="field"><span class="label">${labels[k] || k}</span><div class="value">${v || '---'}</div></div>`).join('') : ''}
               ${occ.weaponry ? Object.entries(occ.weaponry).map(([k, v]) => `<div class="field"><span class="label">${labels[k] || k}</span><div class="value">${v || '---'}</div></div>`).join('') : ''}
             </div>
@@ -561,12 +567,12 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
 
           ${occ.signature_url ? `
           <div class="section">
-            <div class="section-header">Assinatura</div>
-            <div class="section-content">
+            <div class="section-header" >Assinatura</div>
+            <div class="section-content" style="text-align: center;">
                <img src="${occ.signature_url}" style="max-height: 60px; max-width: 200px;" />
                <div style="font-size: 10px; color: #666; margin-top: 5px;">
                   ${occ.signature_by ? `<div>Assinado por: <strong>${occ.signature_by}</strong></div>` : ''}
-                  ${occ.signature_at ? `<div>Em: ${new Date(occ.signature_at).toLocaleString('pt-BR')}</div>` : ''}
+                 ${occ.signature_at ? `<div>Em: ${new Date(occ.signature_at).toLocaleString('pt-BR')}</div>` : ''}
                </div>
             </div>
           </div>` : ''}
@@ -610,7 +616,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
         <head>
           <title>Relatório de Ocorrências - ${companyName}</title>
           <style>
-            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 40px; color: #333; max-width: 800px; margin: 0 auto; }
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 40px; padding-bottom: 40px; color: #333; max-width: 800px; margin: 0 auto; }
             .header { display: flex; align-items: center; justify-content: space-between; border-bottom: 2px solid #3b82f6; padding-bottom: 20px; margin-bottom: 30px; }
             .logo { max-height: 60px; max-width: 200px; object-fit: contain; }
             .title-container { flex: 1; }
@@ -621,15 +627,15 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
             .section { margin-bottom: 15px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
             .section-header { background-color: #f3f4f6; padding: 8px 12px; font-weight: bold; border-bottom: 1px solid #e5e7eb; color: #374151; font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; }
             .section-content { padding: 12px; }
-            .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+            .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
             .field { margin-bottom: 5px; }
             .label { font-size: 10px; color: #6b7280; text-transform: uppercase; font-weight: 600; margin-bottom: 2px; display: block; }
             .value { font-size: 13px; color: #111827; font-weight: 500; }
             .photos { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
-            .photo { width: 120px; height: 120px; object-fit: cover; border-radius: 6px; border: 1px solid #ddd; }
-            .footer { margin-top: 50px; text-align: center; font-size: 11px; color: #9ca3af; border-top: 1px solid #eee; padding-top: 20px; }
+            .photo { flex: 1; min-width: 150px; height: 200px; object-fit: cover; border-radius: 6px; border: 1px solid #ddd; }
+            .footer { position: fixed; bottom: 0; left: 0; width: 100%; text-align: center; font-size: 11px; color: #9ca3af; border-top: 1px solid #eee; padding: 10px 0; background: #fff; }
             @media print {
-                body { padding: 0; }
+                body { padding: 0; padding-bottom: 40px; }
                 .occurrence-container { break-inside: avoid; }
             }
           </style>
@@ -646,12 +652,23 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
 
           ${occurrences.map(occ => `
             <div class="occurrence-container">
-              <h2 style="font-size: 18px; margin-bottom: 10px; color: #1f2937;">${occ.title} <span style="font-size: 12px; font-weight: normal; color: #6b7280;">(${new Date(occ.created_at).toLocaleString('pt-BR')})</span></h2>
-              
               <div class="section">
-                <div class="section-header">Descrição</div>
+                <div class="section-header">Detalhes Principais</div>
                 <div class="section-content">
-                  <div class="value" style="white-space: pre-wrap; line-height: 1.5;">${occ.description}</div>
+                  <div class="grid" style="grid-template-columns: 3fr 1fr; margin-bottom: 10px;">
+                    <div class="field">
+                      <span class="label">Título</span>
+                      <div class="value" style="font-size: 16px;">${occ.title}</div>
+                    </div>
+                    <div class="field">
+                       <span class="label">Data do Registro</span>
+                       <div class="value">${new Date(occ.created_at).toLocaleString('pt-BR')}</div>
+                    </div>
+                  </div>
+                  <div class="field">
+                    <span class="label">Descrição</span>
+                    <div class="value" style="white-space: pre-wrap; line-height: 1.5;">${occ.description}</div>
+                  </div>
                 </div>
               </div>
 
@@ -669,7 +686,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
               ${(occ.cargo_material || occ.weaponry) ? `
               <div class="section">
                 <div class="section-header">Materiais e Armamento</div>
-                <div class="section-content grid">
+                <div class="section-content grid" style="grid-template-columns: repeat(6, 1fr);">
                   ${occ.cargo_material ? Object.entries(occ.cargo_material).map(([k, v]) => `<div class="field"><span class="label">${labels[k] || k}</span><div class="value">${v || '---'}</div></div>`).join('') : ''}
                   ${occ.weaponry ? Object.entries(occ.weaponry).map(([k, v]) => `<div class="field"><span class="label">${labels[k] || k}</span><div class="value">${v || '---'}</div></div>`).join('') : ''}
                 </div>
@@ -684,7 +701,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                   </div>
                 </div>
               </div>` : ''}
-
+// 
               ${occ.signature_url ? `
               <div class="section">
                 <div class="section-header">Assinatura</div>
@@ -741,7 +758,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
           <title>Relatório de Entradas e Saídas</title>
           <style>
             @page { size: landscape; margin: 10mm; }
-            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; color: #111; font-size: 10px; -webkit-print-color-adjust: exact; }
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; padding-bottom: 30px; color: #111; font-size: 10px; -webkit-print-color-adjust: exact; }
             .header { display: flex; align-items: center; justify-content: space-between; border-bottom: 2px solid #3b82f6; padding-bottom: 10px; margin-bottom: 20px; }
             .logo { max-height: 50px; max-width: 150px; object-fit: contain; }
             .title-container { flex: 1; }
@@ -766,7 +783,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
             .driver-photo { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; border: 1px solid #e5e7eb; }
             .evidence-photo { width: 36px; height: 36px; border-radius: 4px; object-fit: cover; border: 1px solid #e5e7eb; }
             .evidence-container { display: flex; gap: 4px; }
-            .footer { margin-top: 30px; text-align: center; font-size: 9px; color: #9ca3af; border-top: 1px solid #eee; padding-top: 10px; }
+            .footer { position: fixed; bottom: 0; left: 0; width: 100%; text-align: center; font-size: 9px; color: #9ca3af; border-top: 1px solid #eee; padding: 5px 0; background: #fff; }
           </style>
         </head>
         <body>
