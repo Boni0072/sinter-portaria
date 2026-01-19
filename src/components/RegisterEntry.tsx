@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { db, Driver, Vehicle } from './firebase';
 import { collection, addDoc, getDocs, query, where, orderBy, doc, setDoc, getDoc } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { Save, Camera, Upload, User, Truck, Check, Maximize2, X, Building2, LogOut, ChevronDown, Search } from 'lucide-react';
+import { Save, Camera, Upload, User, Truck, Check, Maximize2, X, Building2, LogOut, ChevronDown, Search, Plus } from 'lucide-react';
 
 interface Props {
   onSuccess: () => void;
@@ -34,11 +34,14 @@ export default function RegisterEntry({ onSuccess }: Props) {
   const [isRestrictedMode, setIsRestrictedMode] = useState(false);
   const [isDriverListOpen, setIsDriverListOpen] = useState(false);
   const [driverSearch, setDriverSearch] = useState('');
+  const [isVehicleListOpen, setIsVehicleListOpen] = useState(false);
+  const [vehicleSearch, setVehicleSearch] = useState('');
 
   const vehiclePhotoRef = useRef<HTMLInputElement>(null);
   const platePhotoRef = useRef<HTMLInputElement>(null);
 
   const selectedDriverData = drivers.find(d => d.id === selectedDriver);
+  const selectedVehicleData = vehicles.find(v => v.id === selectedVehicle);
 
   useEffect(() => {
     const initTenants = async () => {
@@ -161,18 +164,21 @@ export default function RegisterEntry({ onSuccess }: Props) {
     }
   };
 
-  const loadVehicles = async (driverId: string) => {
+  const loadVehicles = async () => {
     try {
-      if (!driverId) return;
+      if (!currentTenantId) return;
       
-      // Busca veículos do motorista na subcoleção 'vehicles' dele
-      const q = query(collection(db, 'drivers', driverId, 'vehicles'), orderBy('plate'));
+      // Busca todos os veículos da empresa (sem filtrar por motorista)
+      const q = query(
+        collection(db, 'tenants', currentTenantId, 'vehicles')
+      );
       const snap = await getDocs(q);
       const allVehicles = snap.docs.map(doc => ({ 
         id: doc.id, 
         ...doc.data() 
       })) as Vehicle[];
 
+      allVehicles.sort((a, b) => (a.plate || '').localeCompare(b.plate || ''));
       setVehicles(allVehicles);
     } catch (err) {
       console.error('Erro ao carregar veículos:', err);
@@ -184,28 +190,32 @@ export default function RegisterEntry({ onSuccess }: Props) {
   }, []);
 
   useEffect(() => {
-    if (selectedDriver) {
-      loadVehicles(selectedDriver);
-    }
-  }, [selectedDriver]);
+    if (currentTenantId) loadVehicles();
+  }, [currentTenantId]);
 
   useEffect(() => {
     if (vehiclePhoto) {
       const url = URL.createObjectURL(vehiclePhoto);
       setVehiclePhotoPreview(url);
       return () => URL.revokeObjectURL(url);
+    } else if ((selectedVehicleData as any)?.vehicle_photo_url) {
+      setVehiclePhotoPreview((selectedVehicleData as any).vehicle_photo_url);
+    } else {
+      setVehiclePhotoPreview(null);
     }
-    setVehiclePhotoPreview(null);
-  }, [vehiclePhoto]);
+  }, [vehiclePhoto, selectedVehicleData]);
 
   useEffect(() => {
     if (platePhoto) {
       const url = URL.createObjectURL(platePhoto);
       setPlatePhotoPreview(url);
       return () => URL.revokeObjectURL(url);
+    } else if ((selectedVehicleData as any)?.plate_photo_url) {
+      setPlatePhotoPreview((selectedVehicleData as any).plate_photo_url);
+    } else {
+      setPlatePhotoPreview(null);
     }
-    setPlatePhotoPreview(null);
-  }, [platePhoto]);
+  }, [platePhoto, selectedVehicleData]);
 
   const convertFileToBase64 = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -252,7 +262,7 @@ export default function RegisterEntry({ onSuccess }: Props) {
     setLoading(true);
 
     try {
-      if (!vehiclePhoto || !platePhoto) {
+      if ((!vehiclePhoto && !vehiclePhotoPreview) || (!platePhoto && !platePhotoPreview)) {
         throw new Error('Por favor, adicione as fotos do veículo e da placa');
       }
 
@@ -269,8 +279,8 @@ export default function RegisterEntry({ onSuccess }: Props) {
 
       // Otimização: Conversão para Base64 e criação de veículo em paralelo
       const uploadsPromise = Promise.all([
-        convertFileToBase64(vehiclePhoto),
-        convertFileToBase64(platePhoto)
+        vehiclePhoto ? convertFileToBase64(vehiclePhoto) : Promise.resolve(vehiclePhotoPreview || ''),
+        platePhoto ? convertFileToBase64(platePhoto) : Promise.resolve(platePhotoPreview || '')
       ]);
 
       // Lógica de salvamento robusta (Geração de ID antecipada)
@@ -282,7 +292,7 @@ export default function RegisterEntry({ onSuccess }: Props) {
           throw new Error('Motorista deve ser selecionado para cadastrar um novo veículo.');
         }
         // Gera o ID localmente na subcoleção do motorista
-        const newVehicleRef = doc(collection(db, 'drivers', selectedDriver, 'vehicles'));
+        const newVehicleRef = doc(collection(db, 'tenants', tenantId, 'vehicles'));
         vehicleId = newVehicleRef.id;
 
         const vehicleData = {
@@ -305,6 +315,15 @@ export default function RegisterEntry({ onSuccess }: Props) {
         uploadsPromise,
         ...vehicleSavePromises
       ]);
+
+      // Atualiza o cadastro do veículo com as fotos recentes
+      if (vehicleId) {
+          const vehicleRef = doc(db, 'tenants', tenantId, 'vehicles', vehicleId);
+          await setDoc(vehicleRef, {
+              vehicle_photo_url: vehiclePhotoUrl,
+              plate_photo_url: platePhotoUrl
+          }, { merge: true });
+      }
 
       // Otimização: Salvar dados desnormalizados para leitura rápida na lista
       const driverSnapshot = drivers.find(d => d.id === selectedDriver);
@@ -586,30 +605,119 @@ export default function RegisterEntry({ onSuccess }: Props) {
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Selecione o Veículo
                   </label>
-                  <select
-                    value={selectedVehicle}
-                    onChange={(e) => {
-                      const value = e.target.value;
-                      if (value === 'new') {
-                        setIsNewVehicle(true);
-                        setSelectedVehicle('new');
-                      } else {
-                        setIsNewVehicle(false);
-                        setSelectedVehicle(value);
-                      }
-                    }}
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-gray-50 transition-all"
-                    required
-                    disabled={!selectedDriver}
-                  >
-                    <option value="">{selectedDriver ? 'Selecione o veículo...' : 'Aguardando seleção do motorista...'}</option>
-                    {vehicles.map((vehicle) => (
-                      <option key={vehicle.id} value={vehicle.id}>
-                        {vehicle.plate} - {vehicle.brand} {vehicle.model}
-                      </option>
-                    ))}
-                    <option value="new" className="font-bold text-blue-600 bg-blue-50">+ Cadastrar Novo Veículo</option>
-                  </select>
+                  
+                  <div className="relative">
+                    {isVehicleListOpen && (
+                      <div className="fixed inset-0 z-10" onClick={() => setIsVehicleListOpen(false)}></div>
+                    )}
+                    
+                    <button
+                      type="button"
+                      onClick={() => setIsVehicleListOpen(!isVehicleListOpen)}
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-gray-50 transition-all text-left flex items-center justify-between relative z-20"
+                      disabled={!selectedDriver}
+                    >
+                       <div className="flex items-center gap-3 overflow-hidden">
+                           {(selectedVehicleData as any)?.plate_photo_url ? (
+                              <img 
+                                src={(selectedVehicleData as any).plate_photo_url} 
+                                alt="Placa" 
+                                className="w-10 h-8 rounded object-cover border border-gray-200 shrink-0 cursor-zoom-in hover:scale-110 transition-transform" 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setZoomedImage((selectedVehicleData as any).plate_photo_url);
+                                }}
+                              />
+                           ) : (
+                              <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${selectedVehicle && selectedVehicle !== 'new' ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-400'}`}>
+                                  <Truck className="w-5 h-5" />
+                              </div>
+                           )}
+                           <span className={`truncate ${selectedVehicle ? "text-gray-900 font-medium" : "text-gray-500"}`}>
+                              {selectedVehicle === 'new' ? 'Novo Veículo' : (selectedVehicleData ? `${selectedVehicleData.plate} - ${selectedVehicleData.brand} ${selectedVehicleData.model}` : (selectedDriver ? "Selecione o veículo..." : "Aguardando motorista..."))}
+                           </span>
+                       </div>
+                       <ChevronDown className={`w-5 h-5 text-gray-400 transition-transform shrink-0 ${isVehicleListOpen ? 'rotate-180' : ''}`} />
+                    </button>
+
+                    {isVehicleListOpen && (
+                      <div className="absolute z-30 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl max-h-80 overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200">
+                          <div className="p-3 border-b border-gray-100 bg-gray-50">
+                              <div className="relative">
+                                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                                  <input
+                                      type="text"
+                                      placeholder="Buscar por placa, modelo..."
+                                      value={vehicleSearch}
+                                      onChange={(e) => setVehicleSearch(e.target.value)}
+                                      className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                      autoFocus
+                                  />
+                              </div>
+                          </div>
+                          <div className="overflow-y-auto flex-1">
+                              {vehicles
+                                  .filter(v => 
+                                      (v.plate || '').toLowerCase().includes(vehicleSearch.toLowerCase()) || 
+                                      (v.model || '').toLowerCase().includes(vehicleSearch.toLowerCase()) ||
+                                      (v.brand || '').toLowerCase().includes(vehicleSearch.toLowerCase())
+                                  )
+                                  .map(vehicle => (
+                                      <button
+                                          key={vehicle.id}
+                                          type="button"
+                                          onClick={() => {
+                                              setSelectedVehicle(vehicle.id);
+                                              setIsNewVehicle(false);
+                                              setIsVehicleListOpen(false);
+                                              setVehicleSearch('');
+                                          }}
+                                          className="w-full px-4 py-3 flex items-center gap-3 hover:bg-blue-50 transition-colors border-b border-gray-50 last:border-0 text-left"
+                                      >
+                                          {(vehicle as any).plate_photo_url ? (
+                                              <img 
+                                                src={(vehicle as any).plate_photo_url} 
+                                                alt="Placa" 
+                                                className="w-12 h-10 rounded object-cover border border-gray-200 shrink-0 cursor-zoom-in hover:scale-110 transition-transform" 
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  setZoomedImage((vehicle as any).plate_photo_url);
+                                                }}
+                                              />
+                                          ) : (
+                                              <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center border border-gray-200 text-gray-400 shrink-0">
+                                                  <Truck className="w-5 h-5" />
+                                              </div>
+                                          )}
+                                          <div className="min-w-0">
+                                              <p className="text-sm font-medium text-gray-900 truncate">{vehicle.plate}</p>
+                                              <p className="text-xs text-gray-500 truncate">{vehicle.brand} {vehicle.model}</p>
+                                          </div>
+                                          {selectedVehicle === vehicle.id && (
+                                              <Check className="w-4 h-4 text-blue-600 ml-auto shrink-0" />
+                                          )}
+                                      </button>
+                                  ))
+                              }
+                              <button
+                                  type="button"
+                                  onClick={() => {
+                                      setSelectedVehicle('new');
+                                      setIsNewVehicle(true);
+                                      setIsVehicleListOpen(false);
+                                      setVehicleSearch('');
+                                  }}
+                                  className="w-full px-4 py-3 flex items-center gap-3 hover:bg-blue-50 transition-colors text-left bg-blue-50/50"
+                              >
+                                  <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center border border-blue-200 text-blue-600 shrink-0">
+                                      <Plus className="w-5 h-5" />
+                                  </div>
+                                  <span className="text-sm font-bold text-blue-700">Cadastrar Novo Veículo</span>
+                              </button>
+                          </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {isNewVehicle && (

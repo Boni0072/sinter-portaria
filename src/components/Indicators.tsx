@@ -17,6 +17,7 @@ interface DashboardMetrics {
 interface TopDriver {
   name: string;
   count: number;
+  photo_url?: string;
 }
 
 type AllData = {
@@ -42,6 +43,8 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
   });
   const [hourlyDistribution, setHourlyDistribution] = useState<number[]>(new Array(24).fill(0));
   const [occurrencesHourlyDistribution, setOccurrencesHourlyDistribution] = useState<number[]>(new Array(24).fill(0));
+  const [dailyDistribution, setDailyDistribution] = useState<number[]>([]);
+  const [occurrencesDailyDistribution, setOccurrencesDailyDistribution] = useState<number[]>([]);
   const [topDrivers, setTopDrivers] = useState<TopDriver[]>([]);
   const [tenants, setTenants] = useState<{id: string, name: string, address?: string, lat?: string, lon?: string, geocoded?: boolean}[]>([]);
   const [selectedTenantId, setSelectedTenantId] = useState<string>('');
@@ -329,8 +332,13 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
     
     hoursCount = new Array(safeTotalHours).fill(0);
     occurrencesHoursCount = new Array(safeTotalHours).fill(0);
+    
+    const totalDays = Math.ceil((rangeEndForCalc.getTime() - rangeStartForCalc.getTime()) / (1000 * 60 * 60 * 24));
+    const safeTotalDays = Math.max(totalDays, 1);
+    const daysCount = new Array(safeTotalDays).fill(0);
+    const occurrencesDaysCount = new Array(safeTotalDays).fill(0);
 
-    const driverCounts: Record<string, number> = {};
+    const driverStats: Record<string, { count: number, photo_url?: string }> = {};
     
     // Stats de Duração
     let dUnder1h = 0;
@@ -387,10 +395,21 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
       if (idx >= 0 && idx < hoursCount.length) {
           hoursCount[idx]++;
       }
+      
+      const diffDays = Math.floor((entryTime - rangeStartForCalc.getTime()) / (1000 * 60 * 60 * 24));
+      if (diffDays >= 0 && diffDays < daysCount.length) {
+          daysCount[diffDays]++;
+      }
 
       const driverName = entry.cached_data?.driver_name;
       if (driverName) {
-        driverCounts[driverName] = (driverCounts[driverName] || 0) + 1;
+        if (!driverStats[driverName]) {
+            driverStats[driverName] = { count: 0, photo_url: entry.cached_data?.driver_photo_url };
+        }
+        driverStats[driverName].count++;
+        if (!driverStats[driverName].photo_url && entry.cached_data?.driver_photo_url) {
+             driverStats[driverName].photo_url = entry.cached_data.driver_photo_url;
+        }
       }
     });
 
@@ -401,13 +420,18 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
       if (idx >= 0 && idx < occurrencesHoursCount.length) {
           occurrencesHoursCount[idx]++;
       }
+      
+      const diffOccDays = Math.floor((occTime - rangeStartForCalc.getTime()) / (1000 * 60 * 60 * 24));
+      if (diffOccDays >= 0 && diffOccDays < occurrencesDaysCount.length) {
+          occurrencesDaysCount[diffOccDays]++;
+      }
     });
 
     const maxHourCount = Math.max(...hoursCount);
     const busiestHourIndex = hoursCount.indexOf(maxHourCount);
 
-    const sortedDrivers = Object.entries(driverCounts)
-      .map(([name, count]) => ({ name, count }))
+    const sortedDrivers = Object.entries(driverStats)
+      .map(([name, data]) => ({ name, count: data.count, photo_url: data.photo_url }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
 
@@ -423,6 +447,8 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
 
     setHourlyDistribution(hoursCount);
     setOccurrencesHourlyDistribution(occurrencesHoursCount);
+    setDailyDistribution(daysCount);
+    setOccurrencesDailyDistribution(occurrencesDaysCount);
     setTopDrivers(sortedDrivers);
     setDurationStats({ 
         under1h: dUnder1h, 
@@ -947,7 +973,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
             return (
               <g key={ratio}>
                 <line x1={paddingX} y1={y} x2={width} y2={y} stroke="#f3f4f6" strokeWidth="1" />
-                <text x={paddingX - 10} y={y + 4} textAnchor="end" fontSize="12" fill="#9ca3af">
+                <text x={paddingX - 10} y={y + 4} textAnchor="end" fontSize="14" fill="#9ca3af">
                   {Math.round(ratio * max)}
                 </text>
               </g>
@@ -967,10 +993,10 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                 strokeDasharray="5 5"
                 className="opacity-70"
               />
-              <text x={paddingX + 5} y={averageY - 5} textAnchor="start" fontSize="11" fill="#ea580c" fontWeight="bold" style={{ textShadow: '0 1px 2px rgba(255,255,255,0.8)' }}>
+              <text x={paddingX + 5} y={averageY - 5} textAnchor="start" fontSize="13" fill="#ea580c" fontWeight="bold" style={{ textShadow: '0 1px 2px rgba(255,255,255,0.8)' }}>
                 Média Diária Reg.: {averageEntries.toFixed(1)}
               </text>
-              <text x={width - 5} y={averageY - 5} textAnchor="end" fontSize="11" fill="#ea580c" fontWeight="bold" style={{ textShadow: '0 1px 2px rgba(255,255,255,0.8)' }}>
+              <text x={width - 5} y={averageY - 5} textAnchor="end" fontSize="13" fill="#ea580c" fontWeight="bold" style={{ textShadow: '0 1px 2px rgba(255,255,255,0.8)' }}>
                 Média Diária Reg.: {averageEntries.toFixed(1)}
               </text>
             </g>
@@ -984,15 +1010,15 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                 y1={averageOccurrencesY} 
                 x2={width} 
                 y2={averageOccurrencesY} 
-                stroke="#c084fc" 
+                stroke="#ef4444" 
                 strokeWidth="2" 
                 strokeDasharray="3 3"
                 className="opacity-70"
               />
-              <text x={paddingX + 5} y={averageOccurrencesY - 5} textAnchor="start" fontSize="11" fill="#9333ea" fontWeight="bold" style={{ textShadow: '0 1px 2px rgba(255,255,255,0.8)' }}>
+              <text x={paddingX + 5} y={averageOccurrencesY - 5} textAnchor="start" fontSize="13" fill="#b91c1c" fontWeight="bold" style={{ textShadow: '0 1px 2px rgba(255,255,255,0.8)' }}>
                 Média Diária Oco.: {averageOccurrences.toFixed(1)}
               </text>
-              <text x={width - 5} y={averageOccurrencesY - 5} textAnchor="end" fontSize="11" fill="#9333ea" fontWeight="bold" style={{ textShadow: '0 1px 2px rgba(255,255,255,0.8)' }}>
+              <text x={width - 5} y={averageOccurrencesY - 5} textAnchor="end" fontSize="13" fill="#b91c1c" fontWeight="bold" style={{ textShadow: '0 1px 2px rgba(255,255,255,0.8)' }}>
                 Média Diária Oco.: {averageOccurrences.toFixed(1)}
               </text>
             </g>
@@ -1010,7 +1036,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
             strokeWidth="2" 
             strokeDasharray="5 5"
           />
-          <text x={currentX} y={paddingY - 8} textAnchor="middle" fontSize="10" fill="#22c55e" fontWeight="bold">
+          <text x={currentX} y={paddingY - 8} textAnchor="middle" fontSize="12" fill="#22c55e" fontWeight="bold">
             {now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })} - {now.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}
           </text>
           </>
@@ -1031,7 +1057,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
           <path
             d={occurrencePathD}
             fill="none"
-            stroke="#c084fc"
+            stroke="#ef4444"
             strokeWidth="3"
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -1095,9 +1121,9 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
           {occurrencePoints.map((point, i) => {
             return (
               <g key={`occ-${i}`} className="group">
-                <circle cx={point.x} cy={point.y} r={point.count > 0 ? 4 : 0} fill="white" stroke="#c084fc" strokeWidth="2" />
+                <circle cx={point.x} cy={point.y} r={point.count > 0 ? 4 : 0} fill="white" stroke="#ef4444" strokeWidth="2" />
                 {point.count > 0 && (
-                  <text x={point.x} y={point.y - 12} textAnchor="middle" fontSize="12" fontWeight="bold" fill="#9333ea">
+                  <text x={point.x} y={point.y - 12} textAnchor="middle" fontSize="12" fontWeight="bold" fill="#b91c1c">
                     {point.count}
                   </text>
                 )}
@@ -1480,7 +1506,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                               x={point.x} 
                               y={height - 35} 
                               textAnchor="middle" 
-                              fontSize="10" 
+                              fontSize="12" 
                               fill="#4b5563"
                               fontWeight="bold"
                             >
@@ -1491,7 +1517,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                                   x={point.x + (12 * gap)} 
                                   y={height - 15} 
                                   textAnchor="middle" 
-                                  fontSize="14" 
+                                  fontSize="16" 
                                   fill="#6b7280"
                                   fontWeight="bold"
                                 >
@@ -1500,7 +1526,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                             )}
                             <circle cx={point.x} cy={point.y} r={point.count > 0 ? 4 : 2} fill="white" stroke="#2563eb" strokeWidth="2" />
                             {point.count > 0 && (
-                              <text x={point.x} y={point.y - 12} textAnchor="middle" fontSize="12" fontWeight="bold" fill="#1f2937">
+                              <text x={point.x} y={point.y - 12} textAnchor="middle" fontSize="14" fontWeight="bold" fill="#1f2937">
                                 {point.count}
                               </text>
                             )}
@@ -1514,7 +1540,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                           <g key={`occ-${i}`} className="group">
                         <circle cx={point.x} cy={point.y} r={point.count > 0 ? 4 : 0} fill="white" stroke="#ef4444" strokeWidth="2" />
                             {point.count > 0 && (
-                          <text x={point.x} y={point.y - 12} textAnchor="middle" fontSize="12" fontWeight="bold" fill="#b91c1c">
+                  <text x={point.x} y={point.y - 12} textAnchor="middle" fontSize="14" fontWeight="bold" fill="#b91c1c">
                                 {point.count}
                               </text>
                             )}
@@ -1535,7 +1561,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                   <span className="text-sm text-gray-600">Entradas</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full bg-purple-500"></div>
+                  <div className="w-3 h-3 rounded-full bg-red-500"></div>
                   <span className="text-sm text-gray-600">Ocorrências</span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -1543,7 +1569,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                   <span className="text-sm text-gray-600">Média Diária Reg.</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <div className="w-4 h-0.5 bg-purple-400"></div>
+                  <div className="w-4 h-0.5 bg-red-400"></div>
                   <span className="text-sm text-gray-600">Média Diária Oco.</span>
                 </div>
               </div>
@@ -1559,14 +1585,21 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                   topDrivers.map((driver, index) => (
                     <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition">
                       <div className="flex items-center gap-3">
-                        <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm ${
+                        <div className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs ${
                           index === 0 ? 'bg-yellow-100 text-yellow-700' : 
                           index === 1 ? 'bg-gray-200 text-gray-700' : 
                           index === 2 ? 'bg-orange-100 text-orange-800' : 'bg-blue-50 text-blue-600'
                         }`}>
                           {index + 1}º
                         </div>
-                        <span className="font-medium text-gray-700">{driver.name}</span>
+                        {driver.photo_url ? (
+                           <img src={driver.photo_url} alt={driver.name} className="w-8 h-8 rounded-full object-cover border border-gray-200" />
+                        ) : (
+                           <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center text-gray-500">
+                             <Users className="w-4 h-4" />
+                           </div>
+                        )}
+                        <span className="font-medium text-gray-700 text-sm">{driver.name}</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="font-bold text-gray-900">{driver.count}</span>
@@ -1579,6 +1612,47 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                 )}
               </div>
             </div>
+          </div>
+
+          {/* Gráfico de Distribuição Diária */}
+          <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
+              <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center gap-2">
+                <Calendar className="w-5 h-5 text-gray-500" /> Distribuição Diária
+              </h3>
+              <div className="flex items-center justify-end gap-4 mb-4">
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-sm bg-blue-600"></div>
+                  <span className="text-xs text-gray-600">Entradas</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-sm bg-red-500"></div>
+                  <span className="text-xs text-gray-600">Ocorrências</span>
+                </div>
+              </div>
+              <div className="h-32 flex items-end gap-2 overflow-x-auto pb-2 pt-6">
+                {dailyDistribution.map((count, index) => {
+                  const max = Math.max(...dailyDistribution, ...occurrencesDailyDistribution, 1);
+                  const date = new Date(chartStartDate);
+                  date.setDate(date.getDate() + index);
+                  const occCount = occurrencesDailyDistribution[index];
+                  
+                  return (
+                    <div key={index} className="flex-1 flex flex-col items-center justify-end h-full min-w-[40px] group">
+                      <div className="flex items-end justify-center gap-1 w-full h-full px-1">
+                           <div className="w-full bg-blue-600 rounded-t-sm transition-all duration-500 relative group/bar" style={{ height: `${(count / max) * 100}%` }} title={`Entradas: ${count}`}>
+                              <span className="absolute -top-4 left-1/2 -translate-x-1/2 text-xs font-bold text-blue-600">{count > 0 ? count : ''}</span>
+                           </div>
+                           <div className="w-full bg-red-500 rounded-t-sm transition-all duration-500 relative group/bar" style={{ height: `${(occCount / max) * 100}%` }} title={`Ocorrências: ${occCount}`}>
+                              <span className="absolute -top-4 left-1/2 -translate-x-1/2 text-xs font-bold text-red-600">{occCount > 0 ? occCount : ''}</span>
+                           </div>
+                      </div>
+                      <div className="mt-2 text-xs text-gray-500 text-center whitespace-nowrap">
+                        {date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
           </div>
 
           {/* Gráfico Comparativo de Empresas (Apenas se houver mais de uma) */}
@@ -1611,7 +1685,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                     <span className="text-xs text-gray-600 group-hover:text-red-600 group-hover:underline decoration-dotted underline-offset-4">Ocorrências</span>
                  </div>
               </div>
-              <div className="h-64 flex items-end gap-2 sm:gap-4 pt-4 border-b border-gray-100">
+              <div className="h-32 flex items-end gap-2 sm:gap-4 pt-4 border-b border-gray-100">
                 {companyStats.map((stat) => {
                   const max = Math.max(...companyStats.map(s => Math.max(s.count, s.occurrencesCount)), 1);
                   return (
@@ -1622,7 +1696,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                              onClick={() => handleBarClick(stat.id, stat.name, 'entries')}
                              title={`Ver detalhes de Entradas: ${stat.count}`}
                            >
-                               <span className="mb-1 text-[10px] font-bold text-blue-600">{stat.count > 0 ? stat.count : ''}</span>
+                               <span className="mb-1 text-xs font-bold text-blue-600">{stat.count > 0 ? stat.count : ''}</span>
                                <div 
                                  className="w-full bg-blue-600 rounded-t-sm transition-all duration-500 relative" 
                                  style={{ height: `${(stat.count / max) * 100}%` }}
@@ -1633,7 +1707,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                              onClick={() => handleBarClick(stat.id, stat.name, 'occurrences')}
                              title={`Ver detalhes de Ocorrências: ${stat.occurrencesCount}`}
                            >
-                               <span className="mb-1 text-[10px] font-bold text-red-600">{stat.occurrencesCount > 0 ? stat.occurrencesCount : ''}</span>
+                               <span className="mb-1 text-xs font-bold text-red-600">{stat.occurrencesCount > 0 ? stat.occurrencesCount : ''}</span>
                                <div 
                                  className="w-full bg-red-500 rounded-t-sm transition-all duration-500 relative" 
                                  style={{ height: `${(stat.occurrencesCount / max) * 100}%` }}
