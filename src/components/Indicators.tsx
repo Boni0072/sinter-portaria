@@ -23,7 +23,7 @@ interface TopDriver {
 type AllData = {
   entries: Record<string, any[]>;
   occurrences: Record<string, any[]>;
-  driverCounts: Record<string, number>;
+  drivers: Record<string, any[]>;
 };
 
 export default function Indicators({ tenantId: propTenantId }: { tenantId?: string }) {
@@ -49,9 +49,9 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
   const [tenants, setTenants] = useState<{id: string, name: string, address?: string, lat?: string, lon?: string, geocoded?: boolean}[]>([]);
   const [selectedTenantId, setSelectedTenantId] = useState<string>('');
   const [companyStats, setCompanyStats] = useState<{id: string, name: string, count: number, occurrencesCount: number}[]>([]);
-  const [selectedCompanyDetails, setSelectedCompanyDetails] = useState<{name: string, type: 'entries' | 'occurrences', data: any[]} | null>(null);
+  const [selectedCompanyDetails, setSelectedCompanyDetails] = useState<{name: string, type: 'entries' | 'occurrences' | 'drivers', data: any[]} | null>(null);
   const [error, setError] = useState<any>(null);
-  const [allData, setAllData] = useState<AllData>({ entries: {}, occurrences: {}, driverCounts: {} });
+  const [allData, setAllData] = useState<AllData>({ entries: {}, occurrences: {}, drivers: {} });
   const [durationStats, setDurationStats] = useState({
     under1h: 0,
     under4h: 0,
@@ -185,7 +185,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
 
     setLoading(true);
     setError(null);
-    setAllData({ entries: {}, occurrences: {}, driverCounts: {} }); // Reset data
+    setAllData({ entries: {}, occurrences: {}, drivers: {} }); // Reset data
 
     const startDate = new Date();
     startDate.setHours(0, 0, 0, 0);
@@ -252,7 +252,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
         (err) => { console.error(`Error on occurrences listener for ${tid}:`, err); setError("Erro ao carregar dados de ocorrências."); }
       );
       const driversUnsub = onSnapshot(driversQuery, 
-        (snapshot) => setAllData(prev => ({ ...prev, driverCounts: { ...prev.driverCounts, [tid]: snapshot.size } })),
+        (snapshot) => setAllData(prev => ({ ...prev, drivers: { ...prev.drivers, [tid]: snapshot.docs.map(d => ({ id: d.id, ...d.data() })) } })),
         (err) => { console.error(`Error on drivers listener for ${tid}:`, err); setError("Erro ao carregar dados de motoristas."); }
       );
 
@@ -269,7 +269,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
     const targetIds = activeTenantId === 'all' ? tenants.map(t => t.id) : [activeTenantId];
     const allEntriesLoaded = targetIds.every(tid => allData.entries[tid] !== undefined);
     const allOccurrencesLoaded = targetIds.every(tid => allData.occurrences[tid] !== undefined);
-    const allDriversLoaded = targetIds.every(tid => allData.driverCounts[tid] !== undefined);
+    const allDriversLoaded = targetIds.every(tid => allData.drivers[tid] !== undefined);
 
     if (!allEntriesLoaded || !allOccurrencesLoaded || !allDriversLoaded || targetIds.length === 0) {
       return;
@@ -277,7 +277,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
 
     const entries = Object.values(allData.entries).flat();
     const occurrences = Object.values(allData.occurrences).flat();
-    const totalDrivers = Object.values(allData.driverCounts).reduce((sum, count) => sum + count, 0);
+    const totalDrivers = Object.values(allData.drivers).reduce((sum, list) => sum + list.length, 0);
 
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
@@ -483,6 +483,55 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
       }
   };
 
+  const handleCardClick = (metricType: string) => {
+    const entries = Object.values(allData.entries).flat();
+    const occurrences = Object.values(allData.occurrences).flat();
+    const drivers = Object.values(allData.drivers).flat();
+    
+    let data: any[] = [];
+    let title = '';
+    let type: 'entries' | 'occurrences' | 'drivers' = 'entries';
+
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+
+    switch (metricType) {
+        case 'vehiclesInside':
+            data = entries.filter(e => !e.exit_time).sort((a, b) => new Date(b.entry_time).getTime() - new Date(a.entry_time).getTime());
+            title = 'Veículos no Pátio';
+            type = 'entries';
+            break;
+        case 'entriesToday':
+            data = entries.filter(e => e.entry_time >= todayStart).sort((a, b) => new Date(b.entry_time).getTime() - new Date(a.entry_time).getTime());
+            title = 'Entradas de Hoje';
+            type = 'entries';
+            break;
+        case 'avgStayDuration':
+            data = entries.filter(e => e.exit_time).sort((a, b) => new Date(b.entry_time).getTime() - new Date(a.entry_time).getTime());
+            title = 'Visitas Concluídas (Histórico)';
+            type = 'entries';
+            break;
+        case 'totalDrivers':
+            data = drivers.sort((a, b) => a.name.localeCompare(b.name));
+            title = 'Motoristas Cadastrados';
+            type = 'drivers';
+            break;
+        case 'totalOccurrences':
+            data = occurrences.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+            title = 'Ocorrências Registradas';
+            type = 'occurrences';
+            break;
+    }
+
+    if (data.length > 0) {
+        setSelectedCompanyDetails({
+            name: title,
+            type,
+            data
+        });
+    }
+  };
+
   const generateOccurrencePDF = (occ: any) => {
     const logo = localStorage.getItem('portal_custom_logo');
     const printWindow = window.open('', '_blank');
@@ -544,10 +593,14 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
           <div class="section" style="flex: 1; display: flex; flex-direction: column;">
             <div class="section-header">Detalhes Principais</div>
             <div class="section-content" style="flex: 1;">
-              <div class="grid" style="grid-template-columns: 3fr 1fr; margin-bottom: 10px;">
+              <div class="grid" style="grid-template-columns: 2fr 1fr 1fr; margin-bottom: 10px;">
                 <div class="field">
                   <span class="label">Título</span>
                   <div class="value" style="font-size: 16px;">${occ.title}</div>
+                </div>
+                <div class="field">
+                   <span class="label">Status</span>
+                   <div class="value" style="font-weight: bold;">${occ.status || 'Pendente'}</div>
                 </div>
                 <div class="field">
                    <span class="label">Data do Registro</span>
@@ -591,17 +644,27 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
             </div>
           </div>` : ''}
 
-          ${occ.signature_url ? `
-          <div class="section">
-            <div class="section-header" >Assinatura</div>
-            <div class="section-content" style="text-align: center;">
-               <img src="${occ.signature_url}" style="max-height: 60px; max-width: 200px;" />
-               <div style="font-size: 10px; color: #666; margin-top: 5px;">
-                  ${occ.signature_by ? `<div>Assinado por: <strong>${occ.signature_by}</strong></div>` : ''}
-                 ${occ.signature_at ? `<div>Em: ${new Date(occ.signature_at).toLocaleString('pt-BR')}</div>` : ''}
-               </div>
-            </div>
-          </div>` : ''}
+          <div style="display: flex; gap: 10px; margin-top: 5px; break-inside: avoid;">
+            ${occ.action_taken ? `
+            <div class="section" style="flex: 1;">
+              <div class="section-header">Ação Realizada</div>
+              <div class="section-content" style="height: 100%;">
+                <div class="value" style="white-space: pre-wrap; line-height: 1.5;">${occ.action_taken}</div>
+              </div>
+            </div>` : ''}
+
+            ${occ.signature_url ? `
+            <div class="section" style="${occ.action_taken ? 'width: 250px;' : 'flex: 1;'}">
+              <div class="section-header">Assinatura</div>
+              <div class="section-content" style="text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%;">
+                 <img src="${occ.signature_url}" style="max-height: 60px; max-width: 200px;" />
+                 <div style="font-size: 10px; color: #666; margin-top: 5px;">
+                    ${occ.signature_by ? `<div>Assinado por: <strong>${occ.signature_by}</strong></div>` : ''}
+                   ${occ.signature_at ? `<div>Em: ${new Date(occ.signature_at).toLocaleString('pt-BR')}</div>` : ''}
+                 </div>
+              </div>
+            </div>` : ''}
+          </div>
 
           <div class="footer">
             Documento gerado eletronicamente pelo Sistema de Portaria.<br/>
@@ -681,10 +744,14 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
               <div class="section">
                 <div class="section-header">Detalhes Principais</div>
                 <div class="section-content">
-                  <div class="grid" style="grid-template-columns: 3fr 1fr; margin-bottom: 10px;">
+                  <div class="grid" style="grid-template-columns: 2fr 1fr 1fr; margin-bottom: 10px;">
                     <div class="field">
                       <span class="label">Título</span>
                       <div class="value" style="font-size: 16px;">${occ.title}</div>
+                    </div>
+                    <div class="field">
+                       <span class="label">Status</span>
+                       <div class="value" style="font-weight: bold;">${occ.status || 'Pendente'}</div>
                     </div>
                     <div class="field">
                        <span class="label">Data do Registro</span>
@@ -695,6 +762,11 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                     <span class="label">Descrição</span>
                     <div class="value" style="white-space: pre-wrap; line-height: 1.5;">${occ.description}</div>
                   </div>
+                  ${occ.action_taken ? `
+                  <div class="field" style="margin-top: 5px;">
+                    <span class="label">Ação Realizada</span>
+                    <div class="value" style="white-space: pre-wrap; line-height: 1.5;">${occ.action_taken}</div>
+                  </div>` : ''}
                 </div>
               </div>
 
@@ -1284,7 +1356,10 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
         <div className="xl:col-span-9 space-y-6">
           {/* Cards Principais */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
-            <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
+            <div 
+              className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm cursor-pointer hover:shadow-md transition-all hover:-translate-y-1"
+              onClick={() => handleCardClick('vehiclesInside')}
+            >
               <div className="flex justify-between items-start">
                 <div>
                   <p className="text-sm font-medium text-gray-500">Veículos no Pátio</p>
@@ -1297,7 +1372,10 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
               <div className="mt-4 text-xs text-gray-500">Agora</div>
             </div>
 
-            <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
+            <div 
+              className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm cursor-pointer hover:shadow-md transition-all hover:-translate-y-1"
+              onClick={() => handleCardClick('entriesToday')}
+            >
               <div className="flex justify-between items-start">
                 <div>
                   <p className="text-sm font-medium text-gray-500">Entradas Hoje</p>
@@ -1310,7 +1388,10 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
               <div className="mt-4 text-xs text-gray-500">Total do dia</div>
             </div>
 
-            <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
+            <div 
+              className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm cursor-pointer hover:shadow-md transition-all hover:-translate-y-1"
+              onClick={() => handleCardClick('avgStayDuration')}
+            >
               <div className="flex justify-between items-start">
                 <div>
                   <p className="text-sm font-medium text-gray-500">Tempo Médio</p>
@@ -1323,7 +1404,10 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
               <div className="mt-4 text-xs text-gray-500">Permanência no local</div>
             </div>
 
-            <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
+            <div 
+              className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm cursor-pointer hover:shadow-md transition-all hover:-translate-y-1"
+              onClick={() => handleCardClick('totalDrivers')}
+            >
               <div className="flex justify-between items-start">
                 <div>
                   <p className="text-sm font-medium text-gray-500">Total Motoristas</p>
@@ -1336,7 +1420,10 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
               <div className="mt-4 text-xs text-gray-500">Cadastrados na base</div>
             </div>
 
-            <div className="bg-red-50 p-6 rounded-xl border border-red-100 shadow-sm">
+            <div 
+              className="bg-red-50 p-6 rounded-xl border border-red-100 shadow-sm cursor-pointer hover:shadow-md transition-all hover:-translate-y-1"
+              onClick={() => handleCardClick('totalOccurrences')}
+            >
               <div className="flex justify-between items-start">
                 <div>
                   <p className="text-sm font-medium text-red-900">Ocorrências</p>
@@ -1873,8 +1960,8 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
           <div className="bg-white w-full max-w-4xl max-h-[80vh] flex flex-col shadow-2xl animate-in zoom-in-95 duration-200 rounded-xl overflow-hidden" onClick={e => e.stopPropagation()}>
              <div className="flex justify-between items-center p-6 border-b border-gray-100 bg-gray-50">
                 <h3 className="text-xl font-bold text-gray-800 flex items-center gap-2">
-                    {selectedCompanyDetails.type === 'entries' ? <Truck className="w-6 h-6 text-blue-600" /> : <AlertTriangle className="w-6 h-6 text-red-600" />}
-                    {selectedCompanyDetails.type === 'entries' ? 'Registros de Entrada' : 'Ocorrências'} - <span className="text-gray-600 font-normal">{selectedCompanyDetails.name}</span>
+                    {selectedCompanyDetails.type === 'entries' ? <Truck className="w-6 h-6 text-blue-600" /> : selectedCompanyDetails.type === 'drivers' ? <Users className="w-6 h-6 text-orange-600" /> : <AlertTriangle className="w-6 h-6 text-red-600" />}
+                    {selectedCompanyDetails.type === 'entries' ? 'Registros de Entrada' : selectedCompanyDetails.type === 'drivers' ? 'Motoristas' : 'Ocorrências'} - <span className="text-gray-600 font-normal">{selectedCompanyDetails.name}</span>
                 </h3>
                 <div className="flex items-center gap-2">
                     {selectedCompanyDetails.type === 'occurrences' && (
@@ -1916,33 +2003,75 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                             </div>
                         ))}
                     </div>
-                ) : (
-                    <div className="space-y-3">
+                ) : selectedCompanyDetails.type === 'occurrences' ? (
+                    <div className="space-y-2">
                         {selectedCompanyDetails.data.map((occ: any) => (
                             <div 
                               key={occ.id} 
-                              className="bg-white border-l-4 border-red-500 rounded-r-lg p-4 shadow-sm hover:shadow transition-all cursor-pointer group"
+                              className="bg-white border-l-4 border-red-500 rounded-r-lg p-3 shadow-sm hover:shadow transition-all cursor-pointer group"
                               onClick={() => generateOccurrencePDF(occ)}
                               title="Clique para gerar PDF da Ocorrência"
                             >
-                                <div className="flex justify-between items-start mb-2">
-                                    <h4 className="font-bold text-gray-900 group-hover:text-red-600 transition-colors">{occ.title}</h4>
-                                    <span className="text-xs text-gray-500">{formatDateTime(occ.created_at)}</span>
+                                <div className="flex justify-between items-start gap-3">
+                                    <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-2 mb-1">
+                                            <h4 className="font-bold text-gray-900 text-base group-hover:text-red-600 transition-colors truncate">{occ.title}</h4>
+                                            <span className={`text-xs font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap ${
+                                                occ.status === 'Concluída' ? 'bg-green-100 text-green-800' : 
+                                                occ.status === 'Em Andamento' ? 'bg-yellow-100 text-yellow-800' : 
+                                                occ.status === 'Parada' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-800'
+                                            }`}>
+                                                {occ.status || 'Pendente'}
+                                            </span>
+                                            {occ.signature_by && (
+                                                <span className="text-xs text-gray-500 font-medium truncate max-w-[120px]" title={`Usuário: ${occ.signature_by}`}>
+                                                    • {occ.signature_by}
+                                                </span>
+                                            )}
+                                            <span className="text-xs text-gray-400 ml-auto shrink-0">{formatDateTime(occ.created_at)}</span>
+                                        </div>
+                                        
+                                        <p className="text-sm text-gray-600 line-clamp-2 mb-1">{occ.description}</p>
+                                        
+                                {occ.action_taken && (
+                                            <div className="text-sm text-gray-500 bg-gray-50 p-1.5 rounded border border-gray-100 mt-1">
+                                                <span className="font-semibold text-gray-700">Ação:</span> <span className="line-clamp-1 inline">{occ.action_taken}</span>
+                                    </div>
+                                )}
+                                    </div>
+
+                                    <div className="shrink-0 flex flex-col items-end gap-1">
+                                        {occ.signature_url && (
+                                            <img src={occ.signature_url} alt="Assinatura" className="h-6 object-contain opacity-50 group-hover:opacity-100 transition-opacity" />
+                                        )}
+                                        <div className="opacity-0 group-hover:opacity-100 transition-opacity">
+                                            <FileText className="w-4 h-4 text-blue-600" />
+                                        </div>
+                                    </div>
                                 </div>
-                                <div className="flex justify-between items-start gap-4">
-                                    <p className="text-sm text-gray-700 whitespace-pre-wrap line-clamp-3 flex-1">{occ.description}</p>
-                                    {occ.signature_url && (
-                                      <div className="flex flex-col items-end shrink-0 bg-white p-2 rounded border border-gray-200 shadow-sm">
-                                         <img src={occ.signature_url} alt="Assinatura" className="h-12 object-contain" />
-                                         <div className="text-right mt-0.5">
-                                            {occ.signature_by && <p className="text-[9px] text-gray-600 font-bold">{occ.signature_by}</p>}
-                                            <p className="text-[9px] text-gray-400">{occ.signature_at ? formatDateTime(occ.signature_at) : ''}</p>
-                                         </div>
-                                      </div>
+                            </div>
+                        ))}
+                    </div>
+                ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {selectedCompanyDetails.data.map((driver: any) => (
+                            <div key={driver.id} className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-sm transition-all flex items-center gap-4">
+                                {driver.photo_url ? (
+                                    <img src={driver.photo_url} alt={driver.name} className="w-12 h-12 rounded-full object-cover border border-gray-200" />
+                                ) : (
+                                    <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center border border-gray-200 text-gray-400">
+                                        <Users className="w-6 h-6" />
+                                    </div>
+                                )}
+                                <div>
+                                    <h4 className="font-bold text-gray-900">{driver.name}</h4>
+                                    <p className="text-sm text-gray-600">CPF: {driver.document}</p>
+                                    {driver.cnh && <p className="text-xs text-gray-500">CNH: {driver.cnh} {driver.cnh_category ? `(${driver.cnh_category})` : ''}</p>}
+                                    {driver.cnh_validity && (
+                                        <p className={`text-xs mt-1 ${new Date(driver.cnh_validity) < new Date() ? 'text-red-600 font-bold' : 'text-green-600'}`}>
+                                            Validade: {new Date(driver.cnh_validity).toLocaleDateString('pt-BR')}
+                                        </p>
                                     )}
-                                </div>
-                                <div className="mt-3 text-xs text-blue-600 font-medium opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
-                                   <FileText className="w-3 h-3" /> Gerar Relatório PDF
                                 </div>
                             </div>
                         ))}

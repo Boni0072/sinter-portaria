@@ -15,7 +15,7 @@ import {
   QueryDocumentSnapshot 
 } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { LogOut, Clock, Calendar, Image as ImageIcon, ChevronDown, ChevronRight, X, User, Download, Building2 } from 'lucide-react';
+import { LogOut, Clock, Calendar, Image as ImageIcon, ChevronDown, ChevronRight, X, User, Download, Building2, ChevronsDown, ChevronsUp, Search } from 'lucide-react';
 
 interface EntryWithDetails {
   id: string;
@@ -52,6 +52,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
   const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState('');
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set([new Date().toLocaleDateString('pt-BR')]));
+  const [searchTerm, setSearchTerm] = useState('');
   
   const [tenants, setTenants] = useState<{id: string, name: string}[]>([]);
   const [selectedTenantId, setSelectedTenantId] = useState<string>('');
@@ -230,7 +231,13 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
 
   // Combine and sort entries from all tenants
   useEffect(() => {
-    const all = Object.values(entriesPerTenant).flat().sort((a, b) => new Date(b.entry_time).getTime() - new Date(a.entry_time).getTime());
+    let all = Object.values(entriesPerTenant).flat().sort((a, b) => new Date(b.entry_time).getTime() - new Date(a.entry_time).getTime());
+    
+    if (searchTerm) {
+      const lower = searchTerm.toLowerCase();
+      all = all.filter(e => (e.vehicle?.plate || '').toLowerCase().includes(lower));
+    }
+
     setEntries(all);
     
     // Simple heuristic for hasMore: if we have at least limitCount items, assume there might be more.
@@ -241,7 +248,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
     
     setLoading(false);
     setLoadingMore(false);
-  }, [entriesPerTenant]);
+  }, [entriesPerTenant, searchTerm]);
 
   const toggleGroup = (date: string) => {
     setExpandedGroups(prev => {
@@ -334,6 +341,15 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
     return acc;
   }, [] as { date: string; weekday: string; items: EntryWithDetails[] }[]);
 
+  const expandAll = () => {
+    const allDates = new Set(groupedEntries.map(g => g.date));
+    setExpandedGroups(allDates);
+  };
+
+  const collapseAll = () => {
+    setExpandedGroups(new Set());
+  };
+
   if (loading) {
     return (
       <div className="flex justify-center items-center py-12">
@@ -358,6 +374,34 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
           <span className="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-0.5 rounded-full">{entries.length}</span>
         </div>
         
+        <div className="flex flex-col sm:flex-row gap-4 sm:items-center">
+        <div className="flex gap-2 text-sm">
+            <button 
+                onClick={expandAll} 
+                className="flex items-center gap-1 text-blue-600 hover:text-blue-800 hover:underline font-medium"
+            >
+                <ChevronsDown className="w-4 h-4" /> Expandir Tudo
+            </button>
+            <span className="text-gray-300">|</span>
+            <button 
+                onClick={collapseAll} 
+                className="flex items-center gap-1 text-blue-600 hover:text-blue-800 hover:underline font-medium"
+            >
+                <ChevronsUp className="w-4 h-4" /> Recolher Tudo
+            </button>
+        </div>
+
+        <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+                type="text"
+                placeholder="Buscar placa..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-9 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none w-full sm:w-40"
+            />
+        </div>
+
         {tenants.length > 1 && (
             <div className="flex items-center bg-white border border-gray-300 rounded-lg px-3 py-2 shadow-sm">
               <Building2 className="w-4 h-4 text-gray-500 mr-2" />
@@ -382,6 +426,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
           <Download className="w-4 h-4" />
           Exportar Excel
         </button>
+        </div>
       </div>
 
       {entries.length === 0 ? (

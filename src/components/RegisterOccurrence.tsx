@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, Fragment } from 'react';
 import { db } from './firebase';
 import { collection, addDoc, getDocs, query, where, doc, getDoc, setDoc, orderBy, documentId, onSnapshot, updateDoc } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { Save, Camera, Upload, AlertTriangle, X, Building2, User, ChevronDown, ChevronUp, Package, Shield, Car, ChevronRight, PenTool, Eraser } from 'lucide-react';
+import { Save, Camera, Upload, AlertTriangle, X, Building2, User, ChevronDown, ChevronUp, Package, Shield, Car, ChevronRight, PenTool, Eraser, Edit, ChevronsDown, ChevronsUp } from 'lucide-react';
 
 interface Props {
   onSuccess: () => void;
@@ -28,6 +28,12 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
   const [signingOccurrenceId, setSigningOccurrenceId] = useState<string | null>(null);
   const signatureCanvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawingSignature, setIsDrawingSignature] = useState(false);
+  const [signatureStatus, setSignatureStatus] = useState('Concluída');
+  const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
+  const [editingStatusId, setEditingStatusId] = useState<string | null>(null);
+  const [tempStatus, setTempStatus] = useState('');
+  const [actionTaken, setActionTaken] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
 
   // Novos estados para Material de Carga e Armamento
   const [cargoMaterial, setCargoMaterial] = useState({
@@ -289,7 +295,12 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
     });
   };
 
-  const groupedOccurrences = occurrences.reduce((acc, occ) => {
+  const filteredOccurrences = occurrences.filter(occ => {
+    if (statusFilter === 'all') return true;
+    return (occ.status || 'Pendente') === statusFilter;
+  });
+
+  const groupedOccurrences = filteredOccurrences.reduce((acc, occ) => {
     const occDate = new Date(occ.created_at);
     const date = occDate.toLocaleDateString('pt-BR');
     const weekday = occDate.toLocaleDateString('pt-BR', { weekday: 'long' });
@@ -303,6 +314,15 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
     }
     return acc;
   }, [] as { date: string; weekday: string; items: any[] }[]);
+
+  const expandAll = () => {
+    const allDates = new Set(groupedOccurrences.map(g => g.date));
+    setExpandedGroups(allDates);
+  };
+
+  const collapseAll = () => {
+    setExpandedGroups(new Set());
+  };
 
   const startSigning = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = signatureCanvasRef.current;
@@ -346,13 +366,41 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
         await updateDoc(doc(db, 'tenants', currentTenantId, 'occurrences', signingOccurrenceId), {
             signature_url: signatureUrl,
             signature_at: new Date().toISOString(),
-            signature_by: (userProfile as any)?.name || user?.email || 'Usuário'
+            signature_by: (userProfile as any)?.name || user?.email || 'Usuário',
+            status: signatureStatus
         });
         setIsSignatureModalOpen(false);
         setSigningOccurrenceId(null);
     } catch (error) {
         console.error("Error saving signature", error);
         alert("Erro ao salvar assinatura");
+    }
+  };
+
+  const handleUpdateStatus = async () => {
+    if (!editingStatusId || !currentTenantId) return;
+    
+    if (tempStatus === 'Concluída' && !actionTaken.trim()) {
+        alert("O campo 'Ação Realizada' é obrigatório para concluir a ocorrência.");
+        return;
+    }
+
+    try {
+        const updateData: any = { status: tempStatus };
+        
+        if (tempStatus === 'Concluída') {
+            updateData.action_taken = actionTaken;
+            updateData.completed_at = new Date().toISOString();
+            updateData.completed_by = user?.uid;
+        }
+
+        await updateDoc(doc(db, 'tenants', currentTenantId, 'occurrences', editingStatusId), updateData);
+        setIsStatusModalOpen(false);
+        setEditingStatusId(null);
+        setActionTaken('');
+    } catch (error) {
+        console.error("Error updating status", error);
+        alert("Erro ao atualizar status");
     }
   };
 
@@ -648,7 +696,41 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
       )}
 
       <div className="mt-12 border-t pt-8">
-        <h3 className="text-lg font-bold text-gray-800 mb-4">Histórico de Ocorrências</h3>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
+            <h3 className="text-lg font-bold text-gray-800">Histórico de Ocorrências</h3>
+            
+            <div className="flex flex-col sm:flex-row gap-4 sm:items-center">
+                <div className="flex gap-2 text-sm">
+                    <button 
+                        onClick={expandAll} 
+                        className="flex items-center gap-1 text-blue-600 hover:text-blue-800 hover:underline font-medium"
+                    >
+                        <ChevronsDown className="w-4 h-4" /> Expandir Tudo
+                    </button>
+                    <span className="text-gray-300">|</span>
+                    <button 
+                        onClick={collapseAll} 
+                        className="flex items-center gap-1 text-blue-600 hover:text-blue-800 hover:underline font-medium"
+                    >
+                        <ChevronsUp className="w-4 h-4" /> Recolher Tudo
+                    </button>
+                </div>
+                <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-600 font-medium whitespace-nowrap">Filtrar por Status:</span>
+                <select
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value)}
+                    className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+                >
+                    <option value="all">Todos</option>
+                    <option value="Pendente">Pendente</option>
+                    <option value="Em Andamento">Em Andamento</option>
+                    <option value="Parada">Parada</option>
+                    <option value="Concluída">Concluída</option>
+                </select>
+                </div>
+            </div>
+        </div>
         <div className="bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
@@ -658,6 +740,8 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
                 <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Usuário</th>
                 <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Título</th>
                 <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Descrição</th>
+                <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Status</th>
+                <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Ação Realizada</th>
                 <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Evidências</th>
                 <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Ações</th>
               </tr>
@@ -712,6 +796,18 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
                   <td className="px-6 py-4 text-sm text-gray-500 max-w-xs truncate" title={occ.description}>
                     {occ.description}
                   </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                      occ.status === 'Concluída' ? 'bg-green-100 text-green-800' : 
+                      occ.status === 'Em Andamento' ? 'bg-yellow-100 text-yellow-800' : 
+                      occ.status === 'Parada' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-800'
+                    }`}>
+                      {occ.status || 'Pendente'}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 text-sm text-gray-500 max-w-xs truncate" title={occ.action_taken}>
+                    {occ.action_taken || '---'}
+                  </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                     <div className="flex -space-x-2 overflow-hidden">
                         {occ.photos?.map((photo: string, idx: number) => (
@@ -727,6 +823,22 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
                     </div>
                   </td>
                   <td className="px-6 py-4 text-sm text-gray-500">
+                    <div className="flex items-center justify-end gap-2">
+                      {occ.status !== 'Concluída' && (
+                      <button 
+                          onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingStatusId(occ.id);
+                              setTempStatus(occ.status || 'Pendente');
+                              setActionTaken('');
+                              setIsStatusModalOpen(true);
+                          }}
+                          className="p-2 rounded-full transition-colors text-gray-500 hover:text-blue-600 hover:bg-blue-50"
+                          title="Alterar Status"
+                      >
+                          <Edit className="w-5 h-5" />
+                      </button>
+                      )}
                     {occ.signature_url ? (
                       <div className="flex flex-col gap-1 items-end">
                         <div 
@@ -753,6 +865,7 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
                           onClick={(e) => {
                               e.stopPropagation();
                               setSigningOccurrenceId(occ.id);
+                              setSignatureStatus(occ.status || 'Concluída');
                               setIsSignatureModalOpen(true);
                           }}
                           className="p-2 rounded-full transition-colors text-blue-600 hover:bg-blue-50"
@@ -761,6 +874,7 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
                           <PenTool className="w-5 h-5" />
                       </button>
                     )}
+                    </div>
                   </td>
                 </tr>
                   ))}
@@ -808,6 +922,25 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
                     </button>
                 </div>
                 
+                <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Status da Ocorrência</label>
+                    <div className="flex flex-wrap gap-4">
+                        {['Parada', 'Em Andamento', 'Concluída'].map((status) => (
+                            <label key={status} className="flex items-center gap-2 cursor-pointer">
+                                <input 
+                                    type="radio" 
+                                    name="status" 
+                                    value={status} 
+                                    checked={signatureStatus === status}
+                                    onChange={(e) => setSignatureStatus(e.target.value)}
+                                    className="text-blue-600 focus:ring-blue-500"
+                                />
+                                <span className="text-sm text-gray-700">{status}</span>
+                            </label>
+                        ))}
+                    </div>
+                </div>
+
                 <div className="border-2 border-gray-300 rounded-lg bg-white mb-4 overflow-hidden">
                     <canvas
                         ref={signatureCanvasRef}
@@ -836,6 +969,50 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
                     >
                         <Save className="w-4 h-4" /> Salvar Assinatura
                     </button>
+                </div>
+            </div>
+        </div>
+      )}
+
+      {isStatusModalOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+            <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6" onClick={e => e.stopPropagation()}>
+                <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-lg font-bold text-gray-800">Alterar Status</h3>
+                    <button onClick={() => setIsStatusModalOpen(false)} className="text-gray-400 hover:text-gray-600">
+                        <X className="w-6 h-6" />
+                    </button>
+                </div>
+                
+                <div className="mb-6">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Novo Status</label>
+                    <select
+                        value={tempStatus}
+                        onChange={(e) => setTempStatus(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                    >
+                        <option value="Pendente">Pendente</option>
+                        <option value="Em Andamento">Em Andamento</option>
+                        <option value="Parada">Parada</option>
+                        <option value="Concluída">Concluída</option>
+                    </select>
+                </div>
+
+                {tempStatus === 'Concluída' && (
+                    <div className="mb-6">
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Ação Realizada <span className="text-red-500">*</span></label>
+                        <textarea
+                            value={actionTaken}
+                            onChange={(e) => setActionTaken(e.target.value)}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 h-24 resize-none"
+                            placeholder="Descreva a ação tomada para concluir a ocorrência..."
+                        />
+                    </div>
+                )}
+
+                <div className="flex justify-end gap-2">
+                    <button onClick={() => setIsStatusModalOpen(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">Cancelar</button>
+                    <button onClick={handleUpdateStatus} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">Salvar</button>
                 </div>
             </div>
         </div>
