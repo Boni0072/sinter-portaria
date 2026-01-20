@@ -12,6 +12,7 @@ interface Filial {
   address?: string;
   type?: 'matriz' | 'filial';
   parentId?: string;
+  parkingSpots?: number;
 }
 
 interface Props {
@@ -36,7 +37,8 @@ export default function CompanySettings({ tenantId: propTenantId }: Props) {
     phone: '',
     address: '',
     type: 'matriz' as 'matriz' | 'filial',
-    parentId: ''
+    parentId: '',
+    parkingSpots: ''
   });
 
   const activeTenantId = propTenantId || userProfile?.tenantId || user?.uid;
@@ -67,7 +69,8 @@ export default function CompanySettings({ tenantId: propTenantId }: Props) {
           phone: data.phone,
           address: data.address,
           type: data.type || 'matriz', // Default to matriz if type is not set
-          parentId: data.parentId
+          parentId: data.parentId,
+          parkingSpots: data.parkingSpots
         });
       });
       setAllCompanies(companiesList);
@@ -88,13 +91,14 @@ export default function CompanySettings({ tenantId: propTenantId }: Props) {
         cnpj: createData.cnpj || '',
         phone: createData.phone || '',
         address: createData.address || '',
+        parkingSpots: createData.parkingSpots ? parseInt(createData.parkingSpots) : 0,
         type: createData.type,
         parentId: createData.type === 'filial' && createData.parentId ? createData.parentId : null,
         created_at: new Date().toISOString(),
         created_by: user?.uid
       });
       setShowCreateModal(false);
-      setCreateData({ name: '', cnpj: '', phone: '', address: '', type: 'matriz', parentId: '' });
+      setCreateData({ name: '', cnpj: '', phone: '', address: '', type: 'matriz', parentId: '', parkingSpots: '' });
       setMessage({ type: 'success', text: 'Empresa criada com sucesso!' });
     } catch (error: any) {
       console.error("Erro ao criar empresa:", error);
@@ -122,6 +126,7 @@ export default function CompanySettings({ tenantId: propTenantId }: Props) {
         cnpj: editData.cnpj || '',
         phone: editData.phone || '',
         address: editData.address || '',
+        parkingSpots: editData.parkingSpots || 0,
         updated_at: new Date().toISOString(),
         updated_by: user?.uid
       }, { merge: true });
@@ -310,7 +315,7 @@ export default function CompanySettings({ tenantId: propTenantId }: Props) {
                   <Building2 className="w-5 h-5 text-blue-600" />
                   <div>
                     <h4 className="font-bold text-gray-800">{matriz.name}</h4>
-                    <p className="text-xs text-gray-500">CNPJ: {matriz.cnpj || 'N/A'} • Matriz</p>
+                    <p className="text-xs text-gray-500">CNPJ: {matriz.cnpj || 'N/A'} • Vagas: {matriz.parkingSpots || 0} • Matriz</p>
                     {matriz.address && <p className="text-xs text-gray-500">{matriz.address}</p>}
                   </div>
                 </div>
@@ -330,7 +335,7 @@ export default function CompanySettings({ tenantId: propTenantId }: Props) {
                         <Store className="w-4 h-4 text-gray-400" />
                         <div>
                           <p className="text-sm font-medium text-gray-700">{filial.name}</p>
-                          <p className="text-xs text-gray-400">CNPJ: {filial.cnpj || 'N/A'}</p>
+                          <p className="text-xs text-gray-400">CNPJ: {filial.cnpj || 'N/A'} • Vagas: {filial.parkingSpots || 0}</p>
                           {filial.address && <p className="text-xs text-gray-400">{filial.address}</p>}
                         </div>
                       </div>
@@ -368,7 +373,7 @@ export default function CompanySettings({ tenantId: propTenantId }: Props) {
                  <div key={filial.id} className="p-4 bg-orange-50 flex justify-between items-center border-b border-orange-100 last:border-0">
                     <div>
                       <p className="font-medium text-gray-800">{filial.name}</p>
-                      <p className="text-xs text-gray-500">CNPJ: {filial.cnpj || 'N/A'}</p>
+                      <p className="text-xs text-gray-500">CNPJ: {filial.cnpj || 'N/A'} • Vagas: {filial.parkingSpots || 0}</p>
                       {filial.address && <p className="text-xs text-gray-500">{filial.address}</p>}
                     </div>
                     <div className="flex items-center gap-2">
@@ -471,6 +476,16 @@ export default function CompanySettings({ tenantId: propTenantId }: Props) {
                   onChange={e => setCreateData({...createData, address: e.target.value})}
                 />
               </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Quantidade de Vagas</label>
+                <input 
+                  type="number" 
+                  className="w-full px-3 py-2 border rounded-lg"
+                  value={createData.parkingSpots}
+                  onChange={e => setCreateData({...createData, parkingSpots: e.target.value})}
+                  min="0"
+                />
+              </div>
               
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Tipo de Empresa</label>
@@ -562,6 +577,16 @@ export default function CompanySettings({ tenantId: propTenantId }: Props) {
                   className="w-full px-3 py-2 border rounded-lg"
                   value={editData.address || ''}
                   onChange={e => setEditData({...editData, address: e.target.value})}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Quantidade de Vagas</label>
+                <input 
+                  type="number" 
+                  className="w-full px-3 py-2 border rounded-lg"
+                  value={editData.parkingSpots ?? ''}
+                  onChange={e => setEditData({...editData, parkingSpots: parseInt(e.target.value) || 0})}
+                  min="0"
                 />
               </div>
             </div>

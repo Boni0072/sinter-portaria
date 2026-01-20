@@ -10,12 +10,15 @@ export default function RegisterUser() {
   const [allowedPages, setAllowedPages] = useState<string[]>([]);
 
   const availablePages = [
-    { id: 'register_entry', label: 'Registrar Entrada' },
-    { id: 'view_records', label: 'Ver Registros' },
-    { id: 'dashboard', label: 'Indicadores' },
-    { id: 'users', label: 'Usuários' },
-    { id: 'drivers', label: 'Motoristas' },
-    { id: 'vehicles', label: 'Veículos' }
+    { id: 'indicators', label: 'Indicadores' },
+    { id: 'register-entry', label: 'Registrar Entrada' },
+    { id: 'entries', label: 'Ver Registros' },
+    { id: 'register-driver', label: 'Cadastrar Motorista' },
+    { id: 'register-occurrence', label: 'Registrar Ocorrência' },
+    { id: 'drivers', label: 'Ver Motoristas' },
+    { id: 'register-vehicle', label: 'Cadastrar Veículo' },
+    { id: 'company-settings', label: 'Minha Empresa' },
+    { id: 'users', label: 'Gerenciar Usuários' }
   ];
 
   const togglePage = (pageId: string) => {

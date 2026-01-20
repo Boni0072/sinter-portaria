@@ -15,7 +15,7 @@ import {
   QueryDocumentSnapshot 
 } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { LogOut, Clock, Calendar, Image as ImageIcon, ChevronDown, ChevronRight, X, User, Download, Building2, ChevronsDown, ChevronsUp, Search } from 'lucide-react';
+import { LogOut, Clock, Calendar, Image as ImageIcon, ChevronDown, ChevronRight, X, User, Download, Building2, ChevronsDown, ChevronsUp, Search, MapPin } from 'lucide-react';
 
 interface EntryWithDetails {
   id: string;
@@ -26,6 +26,7 @@ interface EntryWithDetails {
   notes: string;
   registered_by_name?: string;
   tenant_name?: string;
+  tenant_address?: string;
   driver: {
     name: string;
     document: string;
@@ -37,6 +38,7 @@ interface EntryWithDetails {
     model: string;
     color: string;
   };
+  location?: { lat: number, lng: number };
 }
 
 const ITEMS_PER_PAGE = 10;
@@ -54,9 +56,10 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set([new Date().toLocaleDateString('pt-BR')]));
   const [searchTerm, setSearchTerm] = useState('');
   
-  const [tenants, setTenants] = useState<{id: string, name: string}[]>([]);
+  const [tenants, setTenants] = useState<{id: string, name: string, address?: string}[]>([]);
   const [selectedTenantId, setSelectedTenantId] = useState<string>('');
   const [entriesPerTenant, setEntriesPerTenant] = useState<Record<string, EntryWithDetails[]>>({});
+  const [addresses, setAddresses] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const initTenants = async () => {
@@ -64,17 +67,25 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
       
       try {
         const allowedTenants = (userProfile as any)?.allowedTenants;
-        let list: {id: string, name: string}[] = [];
+        let list: {id: string, name: string, address?: string}[] = [];
 
         if (allowedTenants && Array.isArray(allowedTenants) && allowedTenants.length > 0) {
           const promises = allowedTenants.map(id => getDoc(doc(db, 'tenants', id)));
           const docs = await Promise.all(promises);
-          list = docs.filter(d => d.exists()).map(d => ({ id: d.id, name: d.data()?.name || 'Empresa sem nome' }));
+          list = docs.filter(d => d.exists()).map(d => ({ 
+            id: d.id, 
+            name: d.data()?.name || 'Empresa sem nome',
+            address: d.data()?.address 
+          }));
         } else {
           const q = query(collection(db, 'tenants'), where('created_by', '==', user.uid));
           const snapshot = await getDocs(q);
           if (!snapshot.empty) {
-            list = snapshot.docs.map(doc => ({ id: doc.id, name: doc.data().name || 'Empresa sem nome' }));
+            list = snapshot.docs.map(doc => ({ 
+              id: doc.id, 
+              name: doc.data().name || 'Empresa sem nome',
+              address: doc.data().address 
+            }));
           }
         }
 
@@ -82,7 +93,11 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
            const tId = (userProfile as any).tenantId;
            const docSnap = await getDoc(doc(db, 'tenants', tId));
            if (docSnap.exists()) {
-             list.push({ id: docSnap.id, name: docSnap.data().name || 'Minha Empresa' });
+             list.push({ 
+               id: docSnap.id, 
+               name: docSnap.data().name || 'Minha Empresa',
+               address: docSnap.data().address 
+             });
            }
         }
 
@@ -148,6 +163,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
           }
 
           const tenantName = tenants.find(t => t.id === tid)?.name || 'Empresa';
+          const tenantAddress = tenants.find(t => t.id === tid)?.address || '';
           // Extrair IDs para busca otimizada
           const entriesRaw = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
           
@@ -189,6 +205,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
                 ...entry,
                 registered_by_name: userData?.name || '---',
                 tenant_name: tenantName,
+                tenant_address: tenantAddress,
                 driver: { 
                   name: entry.cached_data.driver_name, 
                   document: entry.cached_data.driver_document,
@@ -207,6 +224,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
               ...entry,
               registered_by_name: userData?.name || '---',
               tenant_name: tenantName,
+              tenant_address: tenantAddress,
               driver: driverData || { name: 'Desconhecido', document: '---' },
               vehicle: vehicleData || { plate: '---', brand: '', model: '', color: '' }
             } as EntryWithDetails;
@@ -250,6 +268,36 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
     setLoadingMore(false);
   }, [entriesPerTenant, searchTerm]);
 
+  // Efeito para buscar endereços via geolocalização (Geocodificação Reversa)
+  useEffect(() => {
+    const fetchAddresses = async () => {
+      const entriesToFetch = entries.filter(e => e.location && !addresses[e.id]);
+      
+      for (const entry of entriesToFetch) {
+        if (!entry.location) continue;
+        try {
+          const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${entry.location.lat}&lon=${entry.location.lng}&addressdetails=1`);
+          const data = await res.json();
+          if (data.address) {
+            const road = data.address.road || data.address.street || data.address.pedestrian || '';
+            const number = data.address.house_number || '';
+            const city = data.address.city || data.address.town || data.address.village || '';
+            const summary = [road, number].filter(Boolean).join(', ') + (city ? ` - ${city}` : '');
+            setAddresses(prev => ({ ...prev, [entry.id]: summary }));
+          } else if (data.display_name) {
+            const summary = data.display_name.split(',').slice(0, 3).join(',');
+            setAddresses(prev => ({ ...prev, [entry.id]: summary }));
+          }
+          // Pequeno delay para respeitar limites da API (1 req/s)
+          await new Promise(r => setTimeout(r, 1100));
+        } catch (e) {
+          console.error("Erro ao buscar endereço:", e);
+        }
+      }
+    };
+    if (entries.length > 0) fetchAddresses();
+  }, [entries]);
+
   const toggleGroup = (date: string) => {
     setExpandedGroups(prev => {
       const newSet = new Set(prev);
@@ -286,7 +334,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
     if (entries.length === 0) return;
 
     const csvContent = [
-      ['Empresa', 'Placa', 'Marca', 'Modelo', 'Cor', 'Observação', 'Motorista', 'Documento', 'Usuário', 'Entrada', 'Saída'],
+      ['Empresa', 'Placa', 'Marca', 'Modelo', 'Cor', 'Observação', 'Motorista', 'Documento', 'Usuário', 'Entrada', 'Saída', 'Local', 'Endereço'],
       ...entries.map(entry => [
         entry.tenant_name || '---',
         entry.vehicle.plate,
@@ -298,7 +346,9 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
         entry.driver.document,
         entry.registered_by_name || '---',
         formatDateTime(entry.entry_time),
-        entry.exit_time ? formatDateTime(entry.exit_time) : 'Em andamento'
+        entry.exit_time ? formatDateTime(entry.exit_time) : 'Em andamento',
+        entry.location ? `https://www.google.com/maps?q=${entry.location.lat},${entry.location.lng}` : '',
+        addresses[entry.id] || '---'
       ])
     ]
     .map(e => e.map(field => `"${field}"`).join(','))
@@ -451,6 +501,8 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Usuário</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Entrada</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Saída</th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Local</th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Localização (Endereço)</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Evidências</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Ações</th>
               </tr>
@@ -543,6 +595,26 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
                     ) : (
                       <span className="text-xs text-gray-400 italic">---</span>
                     )}
+                  </td>
+                  <td className="px-6 py-2 whitespace-nowrap">
+                    {entry.location ? (
+                      <a 
+                        href={`https://www.google.com/maps?q=${entry.location.lat},${entry.location.lng}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:text-blue-800 hover:bg-blue-50 p-1.5 rounded-full transition-colors inline-flex items-center"
+                        title="Ver no Mapa"
+                      >
+                        <MapPin className="w-4 h-4" />
+                      </a>
+                    ) : <span className="text-xs text-gray-400">---</span>}
+                  </td>
+                  <td className="px-6 py-2 whitespace-nowrap max-w-[200px]">
+                    <span className="text-xs text-gray-500 truncate block" title={addresses[entry.id] || (entry.location ? 'Carregando endereço...' : 'Sem localização')}>
+                      {addresses[entry.id] 
+                        ? addresses[entry.id] 
+                        : (entry.location ? <span className="animate-pulse">Buscando endereço...</span> : '---')}
+                    </span>
                   </td>
                   <td className="px-6 py-2 whitespace-nowrap">
                     <div className="flex space-x-2">

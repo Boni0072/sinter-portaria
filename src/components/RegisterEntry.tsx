@@ -36,6 +36,7 @@ export default function RegisterEntry({ onSuccess }: Props) {
   const [driverSearch, setDriverSearch] = useState('');
   const [isVehicleListOpen, setIsVehicleListOpen] = useState(false);
   const [vehicleSearch, setVehicleSearch] = useState('');
+  const [location, setLocation] = useState<{lat: number, lng: number} | null>(null);
 
   const vehiclePhotoRef = useRef<HTMLInputElement>(null);
   const platePhotoRef = useRef<HTMLInputElement>(null);
@@ -192,6 +193,22 @@ export default function RegisterEntry({ onSuccess }: Props) {
   useEffect(() => {
     if (currentTenantId) loadVehicles();
   }, [currentTenantId]);
+
+  // Obter geolocalização ao montar o componente
+  useEffect(() => {
+    if ("geolocation" in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setLocation({
+            lat: position.coords.latitude,
+            lng: position.coords.longitude
+          });
+        },
+        (error) => console.error("Erro ao obter localização:", error),
+        { enableHighAccuracy: true }
+      );
+    }
+  }, []);
 
   useEffect(() => {
     if (vehiclePhoto) {
@@ -351,7 +368,8 @@ export default function RegisterEntry({ onSuccess }: Props) {
           vehicle_company: (vehicleSnapshot as any)?.company || ''
         },
         registered_by: user?.uid,
-        entry_time: new Date().toISOString()
+        entry_time: new Date().toISOString(),
+        location: location
       };
 
       // Aguarda salvamento real da entrada

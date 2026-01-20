@@ -188,6 +188,42 @@ export default function Dashboard() {
     sessionStorage.setItem('intro_seen', 'true');
   };
 
+  // Função auxiliar para verificar permissão de página
+  const canAccess = (pageId: string) => {
+    // @ts-ignore
+    const allowed = userProfile?.allowedPages;
+    
+    // Normaliza para array se for string (correção de legado)
+    const pagesList = Array.isArray(allowed) ? allowed : (typeof allowed === 'string' ? [allowed] : []);
+
+    // 1. Se houver uma lista de páginas permitidas, ela tem prioridade (mesmo sobre admin)
+    if (pagesList.length > 0) {
+      return pagesList.includes(pageId);
+    }
+
+    // 2. Admins têm acesso a tudo (fallback se não houver páginas específicas definidas).
+    if (userProfile?.role === 'admin') {
+      return true;
+    }
+
+    // 3. Se não for admin e não houver lista, nega o acesso por padrão.
+    return false;
+  };
+
+  // Efeito para redirecionar caso a view atual não seja permitida
+  useEffect(() => {
+    if (!loading && userProfile) {
+      if (!canAccess(currentView)) {
+        const allViews: View[] = ['indicators', 'register-entry', 'entries', 'register-driver', 'drivers', 'register-vehicle', 'users', 'company-settings', 'register-occurrence'];
+        const firstAllowed = allViews.find(v => canAccess(v));
+        
+        if (firstAllowed) {
+          setCurrentView(firstAllowed);
+        }
+      }
+    }
+  }, [userProfile, loading, currentView]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-50">
@@ -247,16 +283,6 @@ export default function Dashboard() {
 
   const commonProps = {
     tenantId: selectedTenantId || userProfile?.tenantId || user?.uid
-  };
-
-  // Função auxiliar para verificar permissão de página
-  const canAccess = (pageId: string) => {
-    // @ts-ignore
-    if (userProfile?.allowedPages && userProfile.allowedPages.length > 0) {
-      // @ts-ignore
-      return userProfile.allowedPages.includes(pageId);
-    }
-    return true; // Se não tiver restrições definidas, permite tudo (comportamento padrão)
   };
 
   const renderView = () => {
@@ -369,9 +395,9 @@ export default function Dashboard() {
         </div>
 
         <nav className="flex-1 px-4 py-6 space-y-2 overflow-y-auto">
+          {canAccess('indicators') && (
           <button
             onClick={() => setCurrentView('indicators')}
-            style={{ display: canAccess('indicators') ? 'flex' : 'none' }}
             title={isSidebarCollapsed ? "Indicadores" : ""}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
               currentView === 'indicators'
@@ -383,10 +409,11 @@ export default function Dashboard() {
             <BarChart3 className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Indicadores</span>}
           </button>
+          )}
 
+          {canAccess('register-entry') && (
           <button
             onClick={() => setCurrentView('register-entry')}
-            style={{ display: canAccess('register-entry') ? 'flex' : 'none' }}
             title={isSidebarCollapsed ? "Registrar Entrada" : ""}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
               currentView === 'register-entry'
@@ -398,10 +425,11 @@ export default function Dashboard() {
             <ArrowRightLeft className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Registrar Entrada</span>}
           </button>
+          )}
 
+          {canAccess('register-occurrence') && (
           <button
             onClick={() => setCurrentView('register-occurrence')}
-            style={{ display: canAccess('register-occurrence') ? 'flex' : 'none' }}
             title={isSidebarCollapsed ? "Registrar Ocorrência" : ""}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
               currentView === 'register-occurrence'
@@ -413,10 +441,11 @@ export default function Dashboard() {
             <AlertTriangle className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Registrar Ocorrência</span>}
           </button>
+          )}
 
+          {canAccess('entries') && (
           <button
             onClick={() => setCurrentView('entries')}
-            style={{ display: canAccess('entries') ? 'flex' : 'none' }}
             title={isSidebarCollapsed ? "Ver Registros" : ""}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
               currentView === 'entries'
@@ -428,10 +457,11 @@ export default function Dashboard() {
             <Truck className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Ver Registros</span>}
           </button>
+          )}
 
+          {canAccess('register-driver') && (
           <button
             onClick={() => setCurrentView('register-driver')}
-            style={{ display: canAccess('register-driver') ? 'flex' : 'none' }}
             title={isSidebarCollapsed ? "Cadastrar Motorista" : ""}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
               currentView === 'register-driver'
@@ -443,10 +473,11 @@ export default function Dashboard() {
             <UserPlus className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Cadastrar Motorista</span>}
           </button>
+          )}
 
+          {canAccess('drivers') && (
           <button
             onClick={() => setCurrentView('drivers')}
-            style={{ display: canAccess('drivers') ? 'flex' : 'none' }}
             title={isSidebarCollapsed ? "Ver Motoristas" : ""}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
               currentView === 'drivers'
@@ -458,10 +489,11 @@ export default function Dashboard() {
             <Users className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Ver Motoristas</span>}
           </button>
+          )}
 
+          {canAccess('register-vehicle') && (
           <button
             onClick={() => setCurrentView('register-vehicle')}
-            style={{ display: canAccess('register-vehicle') ? 'flex' : 'none' }}
             title={isSidebarCollapsed ? "Cadastrar Veículo" : ""}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
               currentView === 'register-vehicle'
@@ -473,10 +505,11 @@ export default function Dashboard() {
             <CarFront className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Cadastrar Veículo</span>}
           </button>
+          )}
 
+          {canAccess('company-settings') && (
           <button
             onClick={() => setCurrentView('company-settings')}
-            style={{ display: canAccess('company-settings') ? 'flex' : 'none' }}
             title={isSidebarCollapsed ? "Minha Empresa" : ""}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
               currentView === 'company-settings'
@@ -488,10 +521,11 @@ export default function Dashboard() {
             <Building2 className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Minha Empresa</span>}
           </button>
+          )}
 
+          {canAccess('users') && (
           <button
             onClick={() => setCurrentView('users')}
-            style={{ display: canAccess('users') ? 'flex' : 'none' }}
             title={isSidebarCollapsed ? "Gerenciar Usuários" : ""}
             className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
               currentView === 'users'
@@ -503,6 +537,7 @@ export default function Dashboard() {
             <Shield className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Usuários</span>}
           </button>
+          )}
         </nav>
 
         {!isSidebarCollapsed && (

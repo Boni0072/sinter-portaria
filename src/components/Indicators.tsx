@@ -2,13 +2,14 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { db } from './firebase';
 import { collection, getDocs, query, where, orderBy, limit, doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { BarChart3, Clock, Truck, Users, ArrowDownRight, Activity, Calendar, Building2, AlertTriangle, Timer, Maximize2, X, Download, FileText } from 'lucide-react';
+import { BarChart3, Clock, Truck, Users, ArrowDownRight, Activity, Calendar, Building2, AlertTriangle, Timer, Maximize2, X, Download, FileText, MapPin, Car } from 'lucide-react';
 
 interface DashboardMetrics {
   vehiclesInside: number;
   entriesToday: number;
   entriesThisMonth: number;
   avgStayDurationMinutes: number;
+  completedVisits: number;
   busiestHour: number;
   totalDrivers: number;
   totalOccurrences: number;
@@ -37,6 +38,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
     entriesToday: 0,
     entriesThisMonth: 0,
     avgStayDurationMinutes: 0,
+    completedVisits: 0,
     busiestHour: 0,
     totalDrivers: 0,
     totalOccurrences: 0
@@ -46,12 +48,13 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
   const [dailyDistribution, setDailyDistribution] = useState<number[]>([]);
   const [occurrencesDailyDistribution, setOccurrencesDailyDistribution] = useState<number[]>([]);
   const [topDrivers, setTopDrivers] = useState<TopDriver[]>([]);
-  const [tenants, setTenants] = useState<{id: string, name: string, address?: string, lat?: string, lon?: string, geocoded?: boolean}[]>([]);
+  const [tenants, setTenants] = useState<{id: string, name: string, address?: string, lat?: string, lon?: string, geocoded?: boolean, parkingSpots?: number}[]>([]);
   const [selectedTenantId, setSelectedTenantId] = useState<string>('');
   const [companyStats, setCompanyStats] = useState<{id: string, name: string, count: number, occurrencesCount: number}[]>([]);
   const [selectedCompanyDetails, setSelectedCompanyDetails] = useState<{name: string, type: 'entries' | 'occurrences' | 'drivers', data: any[]} | null>(null);
   const [error, setError] = useState<any>(null);
   const [allData, setAllData] = useState<AllData>({ entries: {}, occurrences: {}, drivers: {} });
+  const [globalDrivers, setGlobalDrivers] = useState<any[]>([]);
   const [durationStats, setDurationStats] = useState({
     under1h: 0,
     under4h: 0,
@@ -65,6 +68,8 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
   const [chartStartDate, setChartStartDate] = useState<Date>(new Date());
   const [isChartExpanded, setIsChartExpanded] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const [addresses, setAddresses] = useState<Record<string, string>>({});
+  const [showOccupancyModal, setShowOccupancyModal] = useState(false);
 
   const activeTenantId = selectedTenantId || propTenantId || (userProfile as any)?.tenantId || user?.uid;
   
@@ -93,30 +98,47 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
             .map(d => ({ 
               id: d.id, 
               name: d.data()?.name || 'Empresa sem nome',
-              address: d.data()?.address
+              address: d.data()?.address,
+              parkingSpots: d.data()?.parkingSpots
             }));
         } else {
-          const q = query(collection(db, 'tenants'), where('created_by', '==', user.uid));
-          const snapshot = await getDocs(q);
-          if (!snapshot.empty) {
-            list = snapshot.docs.map(doc => ({
-              id: doc.id,
-              name: doc.data().name || 'Empresa sem nome',
-              address: doc.data().address
-            }));
-          }
-        }
-
-        if (list.length === 0 && (userProfile as any)?.tenantId) {
-           const tId = (userProfile as any).tenantId;
-           const docSnap = await getDoc(doc(db, 'tenants', tId));
-           if (docSnap.exists()) {
-             list.push({ 
-               id: docSnap.id, 
-               name: docSnap.data().name || 'Minha Empresa',
-               address: docSnap.data().address
+          // Lógica hierárquica: Matriz + Filiais (igual ao Dashboard)
+          const myTenantId = (userProfile as any)?.tenantId || user.uid;
+          
+          // 1. Busca a própria empresa (Matriz ou Filial)
+          const myTenantSnap = await getDoc(doc(db, 'tenants', myTenantId));
+          if (myTenantSnap.exists()) {
+             list.push({
+               id: myTenantSnap.id,
+               name: myTenantSnap.data().name || 'Minha Empresa',
+               address: myTenantSnap.data().address,
+               parkingSpots: myTenantSnap.data().parkingSpots
              });
-           }
+
+             // 2. Busca filiais vinculadas
+             const q = query(collection(db, 'tenants'), where('parentId', '==', myTenantId));
+             const snapshot = await getDocs(q);
+             snapshot.forEach(doc => {
+               list.push({
+                 id: doc.id,
+                 name: doc.data().name || 'Filial',
+                 address: doc.data().address,
+                 parkingSpots: doc.data().parkingSpots
+               });
+             });
+          }
+          
+          // Fallback: Se não achou nada, tenta por created_by (legado)
+          if (list.length === 0) {
+             const q = query(collection(db, 'tenants'), where('created_by', '==', user.uid));
+             const snapshot = await getDocs(q);
+             list = snapshot.docs.map(doc => ({
+               id: doc.id,
+               name: doc.data().name || 'Empresa sem nome',
+               address: doc.data().address,
+               parkingSpots: doc.data().parkingSpots
+             }));
+          }
         }
 
         list = list.filter((v, i, a) => a.findIndex(t => t.id === v.id) === i);
@@ -173,6 +195,17 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
 
     geocodeTenants();
   }, [tenants]);
+
+  // Listener para motoristas globais (Correção: Busca na coleção raiz 'drivers')
+  useEffect(() => {
+    const q = query(collection(db, 'drivers'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setGlobalDrivers(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, (error) => {
+      console.error("Erro ao buscar motoristas globais:", error);
+    });
+    return () => unsubscribe();
+  }, []);
 
   // Effect for setting up listeners
   useEffect(() => {
@@ -241,7 +274,6 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
 
       const entriesQuery = query(collection(db, 'tenants', tid, 'entries'), ...entryQueryConstraints);
       const occurrencesQuery = query(collection(db, 'tenants', tid, 'occurrences'), ...occurrenceQueryConstraints);
-      const driversQuery = query(collection(db, 'tenants', tid, 'drivers'));
 
       const entriesUnsub = onSnapshot(entriesQuery, 
         (snapshot) => setAllData(prev => ({ ...prev, entries: { ...prev.entries, [tid]: snapshot.docs.map(d => ({ id: d.id, ...d.data() })) } })),
@@ -251,12 +283,8 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
         (snapshot) => setAllData(prev => ({ ...prev, occurrences: { ...prev.occurrences, [tid]: snapshot.docs.map(d => ({ id: d.id, ...d.data() })) } })),
         (err) => { console.error(`Error on occurrences listener for ${tid}:`, err); setError("Erro ao carregar dados de ocorrências."); }
       );
-      const driversUnsub = onSnapshot(driversQuery, 
-        (snapshot) => setAllData(prev => ({ ...prev, drivers: { ...prev.drivers, [tid]: snapshot.docs.map(d => ({ id: d.id, ...d.data() })) } })),
-        (err) => { console.error(`Error on drivers listener for ${tid}:`, err); setError("Erro ao carregar dados de motoristas."); }
-      );
 
-      return [entriesUnsub, occurrencesUnsub, driversUnsub];
+      return [entriesUnsub, occurrencesUnsub];
     });
 
     return () => {
@@ -269,15 +297,14 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
     const targetIds = activeTenantId === 'all' ? tenants.map(t => t.id) : [activeTenantId];
     const allEntriesLoaded = targetIds.every(tid => allData.entries[tid] !== undefined);
     const allOccurrencesLoaded = targetIds.every(tid => allData.occurrences[tid] !== undefined);
-    const allDriversLoaded = targetIds.every(tid => allData.drivers[tid] !== undefined);
 
-    if (!allEntriesLoaded || !allOccurrencesLoaded || !allDriversLoaded || targetIds.length === 0) {
+    if (!allEntriesLoaded || !allOccurrencesLoaded || targetIds.length === 0) {
       return;
     }
 
     const entries = Object.values(allData.entries).flat();
     const occurrences = Object.values(allData.occurrences).flat();
-    const totalDrivers = Object.values(allData.drivers).reduce((sum, list) => sum + list.length, 0);
+    const totalDrivers = globalDrivers.length;
 
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
@@ -440,6 +467,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
       entriesToday: todayCount,
       entriesThisMonth: monthCount,
       avgStayDurationMinutes: completedVisits > 0 ? Math.round(totalDurationMinutes / completedVisits) : 0,
+      completedVisits: completedVisits,
       busiestHour: busiestHourIndex,
       totalDrivers: totalDrivers,
       totalOccurrences: occurrences.length
@@ -470,7 +498,48 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
     }
 
     setLoading(false);
-  }, [allData, activeTenantId, tenants, delayedThreshold, shortDurationLimit, mediumDurationLimit]);
+  }, [allData, activeTenantId, tenants, delayedThreshold, shortDurationLimit, mediumDurationLimit, globalDrivers]);
+
+  // Cálculo de Vagas
+  const totalSpots = tenants.reduce((acc, t) => {
+    if (activeTenantId === 'all' || t.id === activeTenantId) {
+        return acc + (t.parkingSpots || 0);
+    }
+    return acc;
+  }, 0);
+  const availableSpots = Math.max(0, totalSpots - metrics.vehiclesInside);
+
+  // Efeito para buscar endereços via geolocalização (Geocodificação Reversa) para o modal
+  useEffect(() => {
+    const fetchAddresses = async () => {
+      if (!selectedCompanyDetails || selectedCompanyDetails.type !== 'entries') return;
+      
+      const entriesToFetch = selectedCompanyDetails.data.filter((e: any) => e.location && !addresses[e.id]);
+      
+      for (const entry of entriesToFetch) {
+        if (!entry.location) continue;
+        try {
+          const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${entry.location.lat}&lon=${entry.location.lng}&addressdetails=1`);
+          const data = await res.json();
+          if (data.address) {
+            const road = data.address.road || data.address.street || data.address.pedestrian || '';
+            const number = data.address.house_number || '';
+            const city = data.address.city || data.address.town || data.address.village || '';
+            const summary = [road, number].filter(Boolean).join(', ') + (city ? ` - ${city}` : '');
+            setAddresses(prev => ({ ...prev, [entry.id]: summary }));
+          } else if (data.display_name) {
+            const summary = data.display_name.split(',').slice(0, 3).join(',');
+            setAddresses(prev => ({ ...prev, [entry.id]: summary }));
+          }
+          await new Promise(r => setTimeout(r, 1100));
+        } catch (e) {
+          console.error("Erro ao buscar endereço:", e);
+        }
+      }
+    };
+    
+    if (selectedCompanyDetails) fetchAddresses();
+  }, [selectedCompanyDetails]);
 
   const handleBarClick = (tenantId: string, tenantName: string, type: 'entries' | 'occurrences') => {
       const data = type === 'entries' ? allData.entries[tenantId] : allData.occurrences[tenantId];
@@ -486,7 +555,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
   const handleCardClick = (metricType: string) => {
     const entries = Object.values(allData.entries).flat();
     const occurrences = Object.values(allData.occurrences).flat();
-    const drivers = Object.values(allData.drivers).flat();
+    const drivers = [...globalDrivers];
     
     let data: any[] = [];
     let title = '';
@@ -512,7 +581,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
             type = 'entries';
             break;
         case 'totalDrivers':
-            data = drivers.sort((a, b) => a.name.localeCompare(b.name));
+            data = drivers.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
             title = 'Motoristas Cadastrados';
             type = 'drivers';
             break;
@@ -907,6 +976,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                 <th style="width: 10%">Usuário</th>
                 <th style="width: 9%">Entrada</th>
                 <th style="width: 9%">Saída</th>
+                <th style="width: 8%">Local</th>
                 <th style="width: 10%">Evidências</th>
               </tr>
             </thead>
@@ -942,6 +1012,9 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                       ${entry.exit_time 
                           ? `<span class="status-badge status-closed">${new Date(entry.exit_time).toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit'})}</span>` 
                           : '<span class="status-badge status-open">NO PÁTIO</span>'}
+                    </td>
+                    <td>
+                        ${entry.location ? `<a href="https://www.google.com/maps?q=${entry.location.lat},${entry.location.lng}" target="_blank" style="color: #2563eb; text-decoration: none;">Ver Mapa</a>` : '---'}
                     </td>
                     <td>
                         <div class="evidence-container">
@@ -1355,85 +1428,104 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
         {/* Coluna Principal (Esquerda) */}
         <div className="xl:col-span-9 space-y-6">
           {/* Cards Principais */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-4">
             <div 
-              className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm cursor-pointer hover:shadow-md transition-all hover:-translate-y-1"
+              className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm cursor-pointer hover:shadow-md transition-all hover:-translate-y-1"
               onClick={() => handleCardClick('vehiclesInside')}
             >
               <div className="flex justify-between items-start">
                 <div>
                   <p className="text-sm font-medium text-gray-500">Veículos no Pátio</p>
-                  <h3 className="text-3xl font-bold text-blue-600 mt-2">{metrics.vehiclesInside}</h3>
+                  <h3 className="text-2xl font-bold text-blue-600 mt-2">{metrics.vehiclesInside}</h3>
                 </div>
                 <div className="p-2 bg-blue-50 rounded-lg">
-                  <Truck className="w-6 h-6 text-blue-600" />
+                  <Truck className="w-5 h-5 text-blue-600" />
                 </div>
               </div>
-              <div className="mt-4 text-xs text-gray-500">Agora</div>
+              <div className="mt-2 text-xs text-gray-500">Agora</div>
             </div>
 
             <div 
-              className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm cursor-pointer hover:shadow-md transition-all hover:-translate-y-1"
+              className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm cursor-pointer hover:shadow-md transition-all hover:-translate-y-1"
               onClick={() => handleCardClick('entriesToday')}
             >
               <div className="flex justify-between items-start">
                 <div>
                   <p className="text-sm font-medium text-gray-500">Entradas Hoje</p>
-                  <h3 className="text-3xl font-bold text-green-600 mt-2">{metrics.entriesToday}</h3>
+                  <h3 className="text-2xl font-bold text-green-600 mt-2">{metrics.entriesToday}</h3>
                 </div>
                 <div className="p-2 bg-green-50 rounded-lg">
-                  <ArrowDownRight className="w-6 h-6 text-green-600" />
+                  <ArrowDownRight className="w-5 h-5 text-green-600" />
                 </div>
               </div>
-              <div className="mt-4 text-xs text-gray-500">Total do dia</div>
+              <div className="mt-2 text-xs text-gray-500">Total do dia</div>
             </div>
 
             <div 
-              className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm cursor-pointer hover:shadow-md transition-all hover:-translate-y-1"
+              className="bg-cyan-50 p-4 rounded-xl border border-cyan-100 shadow-sm transition-all hover:-translate-y-1 cursor-pointer"
+              onClick={() => setShowOccupancyModal(true)}
+            >
+              <div className="flex justify-between items-start">
+                <div>
+                  <p className="text-sm font-medium text-cyan-900">Vagas Disponíveis</p>
+                  <h3 className="text-2xl font-bold text-cyan-700 mt-2">{availableSpots}</h3>
+                </div>
+                <div className="p-2 bg-white rounded-lg shadow-sm">
+                  <Car className="w-5 h-5 text-cyan-600" />
+                </div>
+              </div>
+              <div className="mt-2 text-xs text-cyan-800">De um total de {totalSpots} vagas</div>
+            </div>
+
+            <div 
+              className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm cursor-pointer hover:shadow-md transition-all hover:-translate-y-1"
               onClick={() => handleCardClick('avgStayDuration')}
+              title={`Cálculo: Soma das durações das visitas dividido por ${metrics.completedVisits} visitas concluídas.`}
             >
               <div className="flex justify-between items-start">
                 <div>
                   <p className="text-sm font-medium text-gray-500">Tempo Médio</p>
-                  <h3 className="text-3xl font-bold text-purple-600 mt-2">{metrics.avgStayDurationMinutes} <span className="text-sm font-normal text-gray-400">min</span></h3>
+                  <h3 className="text-2xl font-bold text-purple-600 mt-2">
+                    {Math.floor(metrics.avgStayDurationMinutes / 60)}h {(metrics.avgStayDurationMinutes % 60).toString().padStart(2, '0')}m
+                  </h3>
                 </div>
                 <div className="p-2 bg-purple-50 rounded-lg">
-                  <Clock className="w-6 h-6 text-purple-600" />
+                  <Clock className="w-5 h-5 text-purple-600" />
                 </div>
               </div>
-              <div className="mt-4 text-xs text-gray-500">Permanência no local</div>
+              <div className="mt-2 text-xs text-gray-500">Baseado em {metrics.completedVisits} visitas</div>
             </div>
 
             <div 
-              className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm cursor-pointer hover:shadow-md transition-all hover:-translate-y-1"
+              className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm cursor-pointer hover:shadow-md transition-all hover:-translate-y-1"
               onClick={() => handleCardClick('totalDrivers')}
             >
               <div className="flex justify-between items-start">
                 <div>
                   <p className="text-sm font-medium text-gray-500">Total Motoristas</p>
-                  <h3 className="text-3xl font-bold text-orange-600 mt-2">{metrics.totalDrivers}</h3>
+                  <h3 className="text-2xl font-bold text-orange-600 mt-2">{metrics.totalDrivers}</h3>
                 </div>
                 <div className="p-2 bg-orange-50 rounded-lg">
-                  <Users className="w-6 h-6 text-orange-600" />
+                  <Users className="w-5 h-5 text-orange-600" />
                 </div>
               </div>
-              <div className="mt-4 text-xs text-gray-500">Cadastrados na base</div>
+              <div className="mt-2 text-xs text-gray-500">Cadastrados na base</div>
             </div>
 
             <div 
-              className="bg-red-50 p-6 rounded-xl border border-red-100 shadow-sm cursor-pointer hover:shadow-md transition-all hover:-translate-y-1"
+              className="bg-red-50 p-4 rounded-xl border border-red-100 shadow-sm cursor-pointer hover:shadow-md transition-all hover:-translate-y-1"
               onClick={() => handleCardClick('totalOccurrences')}
             >
               <div className="flex justify-between items-start">
                 <div>
                   <p className="text-sm font-medium text-red-900">Ocorrências</p>
-                  <h3 className="text-3xl font-bold text-red-700 mt-2">{metrics.totalOccurrences}</h3>
+                  <h3 className="text-2xl font-bold text-red-700 mt-2">{metrics.totalOccurrences}</h3>
                 </div>
                 <div className="p-2 bg-white rounded-lg shadow-sm">
-                  <AlertTriangle className="w-6 h-6 text-red-600" />
+                  <AlertTriangle className="w-5 h-5 text-red-600" />
                 </div>
               </div>
-              <div className="mt-4 text-xs text-red-800">No período selecionado</div>
+              <div className="mt-2 text-xs text-red-800">No período selecionado</div>
             </div>
           </div>
 
@@ -1986,18 +2078,34 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                             <div key={entry.id} className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-sm transition-all flex flex-col sm:flex-row justify-between gap-4">
                                 <div>
                                     <div className="flex items-center gap-2 mb-1">
-                                        <span className="font-bold text-gray-900">{entry.cached_data?.vehicle_plate || '---'}</span>
-                                        <span className="text-xs bg-gray-100 px-2 py-0.5 rounded text-gray-600">{entry.cached_data?.vehicle_model}</span>
+                                        <span className="font-bold text-lg text-gray-900">{entry.cached_data?.vehicle_plate || '---'}</span>
+                                        <span className="text-sm bg-gray-100 px-2 py-0.5 rounded text-gray-600">{entry.cached_data?.vehicle_model}</span>
                                     </div>
-                                    <p className="text-sm text-gray-600 flex items-center gap-1"><Users className="w-3 h-3" /> {entry.cached_data?.driver_name || 'Motorista não identificado'}</p>
-                                    {entry.notes && <p className="text-xs text-gray-500 mt-2 italic">"{entry.notes}"</p>}
+                                    <p className="text-base text-gray-600 flex items-center gap-1"><Users className="w-4 h-4" /> {entry.cached_data?.driver_name || 'Motorista não identificado'}</p>
+                                    {entry.location && (
+                                        <div className="mt-1">
+                                            <a 
+                                                href={`https://www.google.com/maps?q=${entry.location.lat},${entry.location.lng}`}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="text-sm text-blue-600 hover:underline flex items-center gap-1"
+                                                onClick={(e) => e.stopPropagation()}
+                                            >
+                                                <MapPin className="w-4 h-4" /> Ver Localização
+                                            </a>
+                                            <span className="text-sm text-gray-500 block ml-5" title={addresses[entry.id] || 'Buscando...'}>
+                                                {addresses[entry.id] || 'Buscando endereço...'}
+                                            </span>
+                                        </div>
+                                    )}
+                                    {entry.notes && <p className="text-sm text-gray-500 mt-2 italic">"{entry.notes}"</p>}
                                 </div>
-                                <div className="text-right text-sm">
+                                <div className="text-right text-base">
                                     <p className="text-green-600 font-medium">Entrada: {formatDateTime(entry.entry_time)}</p>
                                     {entry.exit_time ? (
                                         <p className="text-red-600 font-medium">Saída: {formatDateTime(entry.exit_time)}</p>
                                     ) : (
-                                        <span className="inline-block mt-1 px-2 py-0.5 bg-green-100 text-green-700 text-xs rounded-full font-bold">No Pátio</span>
+                                        <span className="inline-block mt-1 px-2 py-0.5 bg-green-100 text-green-700 text-sm rounded-full font-bold">No Pátio</span>
                                     )}
                                 </div>
                             </div>
@@ -2064,7 +2172,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                                     </div>
                                 )}
                                 <div>
-                                    <h4 className="font-bold text-gray-900">{driver.name}</h4>
+                                    <h4 className="font-bold text-gray-900">{driver.name || 'Sem Nome'}</h4>
                                     <p className="text-sm text-gray-600">CPF: {driver.document}</p>
                                     {driver.cnh && <p className="text-xs text-gray-500">CNH: {driver.cnh} {driver.cnh_category ? `(${driver.cnh_category})` : ''}</p>}
                                     {driver.cnh_validity && (
@@ -2075,6 +2183,86 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                                 </div>
                             </div>
                         ))}
+                    </div>
+                )}
+             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Eficiência de Ocupação */}
+      {showOccupancyModal && (
+        <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200" onClick={() => setShowOccupancyModal(false)}>
+          <div className="bg-white w-full max-w-2xl shadow-2xl animate-in zoom-in-95 duration-200 rounded-xl overflow-hidden" onClick={e => e.stopPropagation()}>
+             <div className="flex justify-between items-center p-6 border-b border-gray-100 bg-gray-50">
+                <h3 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                    <Car className="w-6 h-6 text-cyan-600" />
+                    Eficiência de Ocupação
+                </h3>
+                <button onClick={() => setShowOccupancyModal(false)} className="p-2 hover:bg-gray-200 rounded-full transition-colors">
+                    <X className="w-6 h-6 text-gray-500" />
+                </button>
+             </div>
+             <div className="p-6">
+                <div className="grid grid-cols-3 gap-4 mb-8 text-center">
+                    <div className="bg-gray-50 p-4 rounded-lg">
+                        <p className="text-sm text-gray-500">Total de Vagas</p>
+                        <p className="text-2xl font-bold text-gray-800">{totalSpots}</p>
+                    </div>
+                    <div className="bg-blue-50 p-4 rounded-lg">
+                        <p className="text-sm text-blue-600">Ocupadas</p>
+                        <p className="text-2xl font-bold text-blue-700">{metrics.vehiclesInside}</p>
+                    </div>
+                    <div className="bg-green-50 p-4 rounded-lg">
+                        <p className="text-sm text-green-600">Disponíveis</p>
+                        <p className="text-2xl font-bold text-green-700">{availableSpots}</p>
+                    </div>
+                </div>
+
+                <div className="mb-8">
+                    <div className="flex justify-between text-sm mb-1">
+                        <span className="font-medium text-gray-700">Taxa de Ocupação Global</span>
+                        <span className="font-bold text-gray-900">{totalSpots > 0 ? ((metrics.vehiclesInside / totalSpots) * 100).toFixed(1) : 0}%</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden">
+                        <div 
+                            className={`h-full transition-all duration-500 ${
+                                (metrics.vehiclesInside / totalSpots) > 0.9 ? 'bg-red-500' : 
+                                (metrics.vehiclesInside / totalSpots) > 0.7 ? 'bg-yellow-500' : 'bg-green-500'
+                            }`}
+                            style={{ width: `${totalSpots > 0 ? Math.min(100, (metrics.vehiclesInside / totalSpots) * 100) : 0}%` }}
+                        ></div>
+                    </div>
+                </div>
+
+                {tenants.length > 1 && (
+                    <div>
+                        <h4 className="font-bold text-gray-800 mb-4">Detalhamento por Unidade</h4>
+                        <div className="space-y-4 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                            {tenants.filter(t => activeTenantId === 'all' || t.id === activeTenantId).map(t => {
+                                const tEntries = allData.entries[t.id] || [];
+                                const tOccupied = tEntries.filter(e => !e.exit_time).length;
+                                const tTotal = t.parkingSpots || 0;
+                                const tPercent = tTotal > 0 ? (tOccupied / tTotal) * 100 : 0;
+                                
+                                return (
+                                    <div key={t.id} className="border-b border-gray-100 pb-3 last:border-0">
+                                        <div className="flex justify-between items-center mb-1">
+                                            <span className="font-medium text-gray-700">{t.name}</span>
+                                            <span className="text-xs text-gray-500">{tOccupied} / {tTotal} vagas ({tPercent.toFixed(0)}%)</span>
+                                        </div>
+                                        <div className="w-full bg-gray-100 rounded-full h-2">
+                                            <div 
+                                                className={`h-full rounded-full ${
+                                                    tPercent > 90 ? 'bg-red-500' : tPercent > 70 ? 'bg-yellow-500' : 'bg-blue-500'
+                                                }`}
+                                                style={{ width: `${Math.min(100, tPercent)}%` }}
+                                            ></div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
                     </div>
                 )}
              </div>
