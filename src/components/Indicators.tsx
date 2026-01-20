@@ -33,6 +33,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
   const [dateRange, setDateRange] = useState('today');
   const [customStartDate, setCustomStartDate] = useState<string>('');
   const [customEndDate, setCustomEndDate] = useState<string>('');
+  const [realTimeVehiclesInside, setRealTimeVehiclesInside] = useState(0);
   const [metrics, setMetrics] = useState<DashboardMetrics>({
     vehiclesInside: 0,
     entriesToday: 0,
@@ -50,10 +51,11 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
   const [topDrivers, setTopDrivers] = useState<TopDriver[]>([]);
   const [tenants, setTenants] = useState<{id: string, name: string, address?: string, lat?: string, lon?: string, geocoded?: boolean, parkingSpots?: number}[]>([]);
   const [selectedTenantId, setSelectedTenantId] = useState<string>('');
-  const [companyStats, setCompanyStats] = useState<{id: string, name: string, count: number, occurrencesCount: number}[]>([]);
+  const [companyStats, setCompanyStats] = useState<{id: string, name: string, count: number, occurrencesCount: number, concludedOccurrences: number}[]>([]);
   const [selectedCompanyDetails, setSelectedCompanyDetails] = useState<{name: string, type: 'entries' | 'occurrences' | 'drivers', data: any[]} | null>(null);
   const [error, setError] = useState<any>(null);
   const [allData, setAllData] = useState<AllData>({ entries: {}, occurrences: {}, drivers: {} });
+  const [vehiclesInsideData, setVehiclesInsideData] = useState<Record<string, any[]>>({});
   const [globalDrivers, setGlobalDrivers] = useState<any[]>([]);
   const [durationStats, setDurationStats] = useState({
     under1h: 0,
@@ -292,6 +294,45 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
     };
   }, [activeTenantId, dateRange, tenantIdsFingerprint, user, customStartDate, customEndDate]);
 
+  // Listener para veículos atualmente no pátio (sem filtro de data)
+  useEffect(() => {
+    if (!user) return;
+
+    const targetIds = activeTenantId === 'all' ? tenants.map(t => t.id) : (activeTenantId ? [activeTenantId] : []);
+    if (targetIds.length === 0) {
+        setVehiclesInsideData({});
+        return;
+    }
+
+    const unsubscribes = targetIds.map(tid => {
+      // Buscamos os registros de entrada sem filtro de data, mas limitados aos mais recentes para performance
+      // O filtro de 'no pátio' será feito localmente para garantir compatibilidade com null ou ""
+      const q = query(collection(db, 'tenants', tid, 'entries'), orderBy('entry_time', 'desc'), limit(500));
+      return onSnapshot(q, (snapshot) => {
+        const inside = snapshot.docs
+          .map(d => ({ id: d.id, ...d.data() }))
+          .filter((e: any) => !e.exit_time || e.exit_time === "" || e.exit_time === null);
+        
+        setVehiclesInsideData(prev => ({ ...prev, [tid]: inside }));
+      }, (error) => {
+        console.error(`Erro ao buscar veículos no pátio para ${tid}:`, error);
+      });
+    });
+
+    return () => unsubscribes.forEach(unsub => unsub());
+  }, [activeTenantId, tenantIdsFingerprint, user]); // Depende apenas do tenant, não da data
+
+  
+  // Atualiza o contador de veículos no pátio em tempo real
+  useEffect(() => {
+    const targetIds = activeTenantId === 'all' ? tenants.map(t => t.id) : (activeTenantId ? [activeTenantId] : []);
+    const total = targetIds.reduce((acc, tid) => {
+      const vehicles = vehiclesInsideData[tid] || [];
+      return acc + vehicles.length;
+    }, 0);
+    setRealTimeVehiclesInside(total);
+  }, [vehiclesInsideData, activeTenantId, tenants]);
+
   // Effect for calculations
   useEffect(() => {
     const targetIds = activeTenantId === 'all' ? tenants.map(t => t.id) : [activeTenantId];
@@ -305,6 +346,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
     const entries = Object.values(allData.entries).flat();
     const occurrences = Object.values(allData.occurrences).flat();
     const totalDrivers = globalDrivers.length;
+    const currentVehiclesInside = targetIds.flatMap(tid => vehiclesInsideData[tid] || []);
 
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
@@ -367,12 +409,6 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
 
     const driverStats: Record<string, { count: number, photo_url?: string }> = {};
     
-    // Stats de Duração
-    let dUnder1h = 0;
-    let dUnder4h = 0;
-    let dOver4h = 0;
-    const delayedMap = new Map<string, any>();
-
     entries.forEach((entry: any) => {
       if (!entry.exit_time) {
         insideCount++;
@@ -384,33 +420,6 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
           totalDurationMinutes += duration;
           completedVisits++;
         }
-      }
-      
-      // Cálculo de Duração para Estatísticas
-      const start = new Date(entry.entry_time).getTime();
-      const end = entry.exit_time ? new Date(entry.exit_time).getTime() : new Date().getTime();
-      const durationMinutes = (end - start) / (1000 * 60);
-
-      if (durationMinutes < shortDurationLimit * 60) dUnder1h++;
-      else if (durationMinutes < mediumDurationLimit * 60) dUnder4h++;
-      else dOver4h++;
-
-      // Identificar veículos com longa permanência (> 24h) ainda no pátio
-      if (!entry.exit_time && durationMinutes > delayedThreshold * 60) {
-         const plate = entry.cached_data?.vehicle_plate || '---';
-         const existing = delayedMap.get(plate);
-         
-         // Se já existe, mantém o mais antigo (maior tempo de pátio) para evitar duplicidade visual
-         if (!existing || new Date(entry.entry_time) < new Date(existing.entryTime)) {
-             delayedMap.set(plate, {
-                 id: entry.id,
-                 plate: plate,
-                 model: entry.cached_data?.vehicle_model || 'Veículo',
-                 driverName: entry.cached_data?.driver_name || 'Motorista',
-                 entryTime: entry.entry_time,
-                 hours: Math.floor(durationMinutes / 60)
-             });
-         }
       }
 
       if (entry.entry_time >= todayStart) todayCount++;
@@ -463,7 +472,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
       .slice(0, 5);
 
     setMetrics({
-      vehiclesInside: insideCount,
+      vehiclesInside: currentVehiclesInside.length,
       entriesToday: todayCount,
       entriesThisMonth: monthCount,
       avgStayDurationMinutes: completedVisits > 0 ? Math.round(totalDurationMinutes / completedVisits) : 0,
@@ -478,27 +487,75 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
     setDailyDistribution(daysCount);
     setOccurrencesDailyDistribution(occurrencesDaysCount);
     setTopDrivers(sortedDrivers);
+    // Company Stats
+    if (tenants.length > 1) {
+        const stats = tenants.map(t => {
+            const tenantOccurrences = allData.occurrences[t.id] || [];
+            const concluded = tenantOccurrences.filter((occ: any) => occ.status === 'Concluída').length;
+
+            return {
+                id: t.id,
+                name: t.name,
+                count: allData.entries[t.id]?.length || 0,
+                occurrencesCount: tenantOccurrences.length,
+                concludedOccurrences: concluded
+            };
+        }).sort((a, b) => b.count - a.count);
+        setCompanyStats(stats);
+    }
+
+    setLoading(false);
+  }, [allData, activeTenantId, tenants, globalDrivers, vehiclesInsideData]);
+
+  // Effect for Stay Duration calculations (real-time, not date-filtered)
+  useEffect(() => {
+    const targetIds = activeTenantId === 'all' ? tenants.map(t => t.id) : [activeTenantId];
+    const vehiclesInside = targetIds.flatMap(tid => vehiclesInsideData[tid] || []);
+
+    let dUnder1h = 0;
+    let dUnder4h = 0;
+    let dOver4h = 0;
+    const delayedMap = new Map<string, any>();
+
+    vehiclesInside.forEach((entry: any) => {
+      const start = new Date(entry.entry_time).getTime();
+      const end = new Date().getTime(); // Always 'now' because they are currently inside
+      const durationMinutes = (end - start) / (1000 * 60);
+
+      if (durationMinutes < shortDurationLimit * 60) {
+        dUnder1h++;
+      } else if (durationMinutes < mediumDurationLimit * 60) {
+        dUnder4h++;
+      } else {
+        dOver4h++;
+      }
+
+      // Identify vehicles with long stays (> threshold) that are still inside
+      if (durationMinutes > delayedThreshold * 60) {
+         const plate = entry.cached_data?.vehicle_plate || '---';
+         const existing = delayedMap.get(plate);
+         
+         if (!existing || new Date(entry.entry_time) < new Date(existing.entryTime)) {
+             delayedMap.set(plate, {
+                 id: entry.id,
+                 plate: plate,
+                 model: entry.cached_data?.vehicle_model || 'Veículo',
+                 driverName: entry.cached_data?.driver_name || 'Motorista',
+                 entryTime: entry.entry_time,
+                 hours: Math.floor(durationMinutes / 60)
+             });
+         }
+      }
+    });
+
     setDurationStats({ 
         under1h: dUnder1h, 
         under4h: dUnder4h, 
         over4h: dOver4h, 
         delayedVehicles: Array.from(delayedMap.values()),
-        total: entries.length || 1
+        total: vehiclesInside.length || 1
     });
-    
-    // Company Stats
-    if (tenants.length > 1) {
-        const stats = tenants.map(t => ({
-            id: t.id,
-            name: t.name,
-            count: allData.entries[t.id]?.length || 0,
-            occurrencesCount: allData.occurrences[t.id]?.length || 0
-        })).sort((a, b) => b.count - a.count);
-        setCompanyStats(stats);
-    }
-
-    setLoading(false);
-  }, [allData, activeTenantId, tenants, delayedThreshold, shortDurationLimit, mediumDurationLimit, globalDrivers]);
+  }, [vehiclesInsideData, activeTenantId, tenants, delayedThreshold, shortDurationLimit, mediumDurationLimit]);
 
   // Cálculo de Vagas
   const totalSpots = tenants.reduce((acc, t) => {
@@ -507,7 +564,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
     }
     return acc;
   }, 0);
-  const availableSpots = Math.max(0, totalSpots - metrics.vehiclesInside);
+  const availableSpots = Math.max(0, totalSpots - realTimeVehiclesInside);
 
   // Efeito para buscar endereços via geolocalização (Geocodificação Reversa) para o modal
   useEffect(() => {
@@ -565,11 +622,13 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
 
     switch (metricType) {
-        case 'vehiclesInside':
-            data = entries.filter(e => !e.exit_time).sort((a, b) => new Date(b.entry_time).getTime() - new Date(a.entry_time).getTime());
+        case 'vehiclesInside': {
+            const targetIds = activeTenantId === 'all' ? tenants.map(t => t.id) : [activeTenantId];
+            data = targetIds.flatMap(tid => vehiclesInsideData[tid] || []).sort((a, b) => new Date(b.entry_time).getTime() - new Date(a.entry_time).getTime());
             title = 'Veículos no Pátio';
             type = 'entries';
             break;
+        }
         case 'entriesToday':
             data = entries.filter(e => e.entry_time >= todayStart).sort((a, b) => new Date(b.entry_time).getTime() - new Date(a.entry_time).getTime());
             title = 'Entradas de Hoje';
@@ -1364,7 +1423,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <h2 className="text-2xl font-bold text-gray-800">Indicadores de Performance</h2>
+        <h2 className="text-3xl font-bold text-gray-800">Indicadores de Performance</h2>
         
         <div className="flex items-center gap-3">
           {tenants.length > 1 && (
@@ -1373,7 +1432,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
               <select 
                 value={activeTenantId}
                 onChange={(e) => setSelectedTenantId(e.target.value)}
-                className="bg-transparent border-none text-sm text-gray-700 focus:ring-0 cursor-pointer outline-none max-w-[150px]"
+                className="bg-transparent border-none text-base text-gray-700 focus:ring-0 cursor-pointer outline-none max-w-[150px]"
               >
                 <option value="all">Todas as Empresas</option>
                 {tenants.map(t => (
@@ -1388,7 +1447,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
             <select 
               value={dateRange}
               onChange={(e) => setDateRange(e.target.value)}
-              className="bg-transparent border-none text-sm text-gray-700 focus:ring-0 cursor-pointer outline-none"
+              className="bg-transparent border-none text-base text-gray-700 focus:ring-0 cursor-pointer outline-none"
             >
               <option value="today">Hoje</option>
               <option value="thisWeek">Esta Semana</option>
@@ -1406,19 +1465,19 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                     type="date" 
                     value={customStartDate}
                     onChange={(e) => setCustomStartDate(e.target.value)}
-                    className="bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 shadow-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                    className="bg-white border border-gray-300 rounded-lg px-3 py-2 text-base text-gray-700 shadow-sm focus:ring-2 focus:ring-blue-500 outline-none"
                 />
                 <span className="text-gray-400">-</span>
                 <input 
                     type="date" 
                     value={customEndDate}
                     onChange={(e) => setCustomEndDate(e.target.value)}
-                    className="bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 shadow-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                    className="bg-white border border-gray-300 rounded-lg px-3 py-2 text-base text-gray-700 shadow-sm focus:ring-2 focus:ring-blue-500 outline-none"
                 />
             </div>
           )}
           
-          <span className="text-sm text-gray-500 flex items-center gap-1 hidden sm:flex">
+          <span className="text-base text-gray-500 flex items-center gap-1 hidden sm:flex">
             <Activity className="w-4 h-4" /> Tempo Real
           </span>
         </div>
@@ -1435,14 +1494,14 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
             >
               <div className="flex justify-between items-start">
                 <div>
-                  <p className="text-sm font-medium text-gray-500">Veículos no Pátio</p>
-                  <h3 className="text-2xl font-bold text-blue-600 mt-2">{metrics.vehiclesInside}</h3>
+                  <p className="text-base font-medium text-gray-500">Veículos no Pátio</p>
+                  <h3 className="text-3xl font-bold text-blue-600 mt-2">{realTimeVehiclesInside}</h3>
                 </div>
                 <div className="p-2 bg-blue-50 rounded-lg">
                   <Truck className="w-5 h-5 text-blue-600" />
                 </div>
               </div>
-              <div className="mt-2 text-xs text-gray-500">Agora</div>
+              <div className="mt-2 text-sm text-gray-500">Agora</div>
             </div>
 
             <div 
@@ -1451,14 +1510,14 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
             >
               <div className="flex justify-between items-start">
                 <div>
-                  <p className="text-sm font-medium text-gray-500">Entradas Hoje</p>
-                  <h3 className="text-2xl font-bold text-green-600 mt-2">{metrics.entriesToday}</h3>
+                  <p className="text-base font-medium text-gray-500">Entradas Hoje</p>
+                  <h3 className="text-3xl font-bold text-green-600 mt-2">{metrics.entriesToday}</h3>
                 </div>
                 <div className="p-2 bg-green-50 rounded-lg">
                   <ArrowDownRight className="w-5 h-5 text-green-600" />
                 </div>
               </div>
-              <div className="mt-2 text-xs text-gray-500">Total do dia</div>
+              <div className="mt-2 text-sm text-gray-500">Total do dia</div>
             </div>
 
             <div 
@@ -1467,14 +1526,14 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
             >
               <div className="flex justify-between items-start">
                 <div>
-                  <p className="text-sm font-medium text-cyan-900">Vagas Disponíveis</p>
-                  <h3 className="text-2xl font-bold text-cyan-700 mt-2">{availableSpots}</h3>
+                  <p className="text-base font-medium text-cyan-900">Vagas Disponíveis</p>
+                  <h3 className="text-3xl font-bold text-cyan-700 mt-2">{availableSpots}</h3>
                 </div>
                 <div className="p-2 bg-white rounded-lg shadow-sm">
                   <Car className="w-5 h-5 text-cyan-600" />
                 </div>
               </div>
-              <div className="mt-2 text-xs text-cyan-800">De um total de {totalSpots} vagas</div>
+              <div className="mt-2 text-sm text-cyan-800">De um total de {totalSpots} vagas</div>
             </div>
 
             <div 
@@ -1484,8 +1543,8 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
             >
               <div className="flex justify-between items-start">
                 <div>
-                  <p className="text-sm font-medium text-gray-500">Tempo Médio</p>
-                  <h3 className="text-2xl font-bold text-purple-600 mt-2">
+                  <p className="text-base font-medium text-gray-500">Tempo Médio</p>
+                  <h3 className="text-3xl font-bold text-purple-600 mt-2">
                     {Math.floor(metrics.avgStayDurationMinutes / 60)}h {(metrics.avgStayDurationMinutes % 60).toString().padStart(2, '0')}m
                   </h3>
                 </div>
@@ -1493,7 +1552,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                   <Clock className="w-5 h-5 text-purple-600" />
                 </div>
               </div>
-              <div className="mt-2 text-xs text-gray-500">Baseado em {metrics.completedVisits} visitas</div>
+              <div className="mt-2 text-sm text-gray-500">Baseado em {metrics.completedVisits} visitas</div>
             </div>
 
             <div 
@@ -1502,14 +1561,14 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
             >
               <div className="flex justify-between items-start">
                 <div>
-                  <p className="text-sm font-medium text-gray-500">Total Motoristas</p>
-                  <h3 className="text-2xl font-bold text-orange-600 mt-2">{metrics.totalDrivers}</h3>
+                  <p className="text-base font-medium text-gray-500">Total Motoristas</p>
+                  <h3 className="text-3xl font-bold text-orange-600 mt-2">{metrics.totalDrivers}</h3>
                 </div>
                 <div className="p-2 bg-orange-50 rounded-lg">
                   <Users className="w-5 h-5 text-orange-600" />
                 </div>
               </div>
-              <div className="mt-2 text-xs text-gray-500">Cadastrados na base</div>
+              <div className="mt-2 text-sm text-gray-500">Cadastrados na base</div>
             </div>
 
             <div 
@@ -1518,14 +1577,14 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
             >
               <div className="flex justify-between items-start">
                 <div>
-                  <p className="text-sm font-medium text-red-900">Ocorrências</p>
-                  <h3 className="text-2xl font-bold text-red-700 mt-2">{metrics.totalOccurrences}</h3>
+                  <p className="text-base font-medium text-red-900">Ocorrências</p>
+                  <h3 className="text-3xl font-bold text-red-700 mt-2">{metrics.totalOccurrences}</h3>
                 </div>
                 <div className="p-2 bg-white rounded-lg shadow-sm">
                   <AlertTriangle className="w-5 h-5 text-red-600" />
                 </div>
               </div>
-              <div className="mt-2 text-xs text-red-800">No período selecionado</div>
+              <div className="mt-2 text-sm text-red-800">No período selecionado</div>
             </div>
           </div>
 
@@ -1533,7 +1592,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
             {/* Gráfico de Horários (Simples com CSS) */}
             <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm lg:col-span-7 relative group">
               <div className="flex justify-between items-center mb-6">
-                <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                <h3 className="text-xl font-bold text-gray-800 flex items-center gap-2">
                   <BarChart3 className="w-5 h-5 text-gray-500" /> Distribuição por Horário ({
                     dateRange === 'today' ? 'Hoje' :
                     dateRange === 'thisWeek' ? 'Esta Semana' :
@@ -1613,7 +1672,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                         return (
                           <g key={ratio}>
                             <line x1={paddingX} y1={y} x2={width} y2={y} stroke="#f3f4f6" strokeWidth="1" />
-                            <text x={paddingX - 10} y={y + 4} textAnchor="end" fontSize="12" fill="#9ca3af">
+                            <text x={paddingX - 10} y={y + 4} textAnchor="end" fontSize="14" fill="#9ca3af">
                               {Math.round(ratio * max)}
                             </text>
                           </g>
@@ -1632,7 +1691,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                         strokeWidth="2" 
                         strokeDasharray="5 5"
                       />
-                      <text x={currentX} y={paddingY - 8} textAnchor="middle" fontSize="10" fill="#22c55e" fontWeight="bold">
+                      <text x={currentX} y={paddingY - 8} textAnchor="middle" fontSize="12" fill="#22c55e" fontWeight="bold">
                         {now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })} - {now.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}
                       </text>
                       </>
@@ -1685,7 +1744,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                               x={point.x} 
                               y={height - 35} 
                               textAnchor="middle" 
-                              fontSize="12" 
+                              fontSize="14" 
                               fill="#4b5563"
                               fontWeight="bold"
                             >
@@ -1696,7 +1755,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                                   x={point.x + (12 * gap)} 
                                   y={height - 15} 
                                   textAnchor="middle" 
-                                  fontSize="16" 
+                                  fontSize="18" 
                                   fill="#6b7280"
                                   fontWeight="bold"
                                 >
@@ -1705,7 +1764,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                             )}
                             <circle cx={point.x} cy={point.y} r={point.count > 0 ? 4 : 2} fill="white" stroke="#2563eb" strokeWidth="2" />
                             {point.count > 0 && (
-                              <text x={point.x} y={point.y - 12} textAnchor="middle" fontSize="14" fontWeight="bold" fill="#1f2937">
+                              <text x={point.x} y={point.y - 12} textAnchor="middle" fontSize="16" fontWeight="bold" fill="#1f2937">
                                 {point.count}
                               </text>
                             )}
@@ -1719,7 +1778,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                           <g key={`occ-${i}`} className="group">
                         <circle cx={point.x} cy={point.y} r={point.count > 0 ? 4 : 0} fill="white" stroke="#ef4444" strokeWidth="2" />
                             {point.count > 0 && (
-                  <text x={point.x} y={point.y - 12} textAnchor="middle" fontSize="14" fontWeight="bold" fill="#b91c1c">
+                  <text x={point.x} y={point.y - 12} textAnchor="middle" fontSize="16" fontWeight="bold" fill="#b91c1c">
                                 {point.count}
                               </text>
                             )}
@@ -1732,31 +1791,31 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
               </div>
               </div>
               
-              <p className="text-xs text-center text-gray-400 mt-2">Horário do dia (0h - 23h)</p>
+              <p className="text-sm text-center text-gray-400 mt-2">Horário do dia (0h - 23h)</p>
               
               <div className="flex items-center justify-center gap-6 mt-4 flex-wrap">
                 <div className="flex items-center gap-2">
                   <div className="w-3 h-3 rounded-full bg-blue-600"></div>
-                  <span className="text-sm text-gray-600">Entradas</span>
+                  <span className="text-base text-gray-600">Entradas</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <div className="w-3 h-3 rounded-full bg-red-500"></div>
-                  <span className="text-sm text-gray-600">Ocorrências</span>
+                  <span className="text-base text-gray-600">Ocorrências</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <div className="w-4 h-0.5 bg-orange-500"></div>
-                  <span className="text-sm text-gray-600">Média Diária Reg.</span>
+                  <span className="text-base text-gray-600">Média Diária Reg.</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <div className="w-4 h-0.5 bg-red-400"></div>
-                  <span className="text-sm text-gray-600">Média Diária Oco.</span>
+                  <span className="text-base text-gray-600">Média Diária Oco.</span>
                 </div>
               </div>
             </div>
 
             {/* Top Motoristas */}
             <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm lg:col-span-3">
-              <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center gap-2">
+              <h3 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-2">
                 <Users className="w-5 h-5 text-gray-500" /> Motoristas Mais Frequentes
               </h3>
               <div className="space-y-4">
@@ -1764,7 +1823,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                   topDrivers.map((driver, index) => (
                     <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition">
                       <div className="flex items-center gap-3">
-                        <div className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs ${
+                        <div className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-sm ${
                           index === 0 ? 'bg-yellow-100 text-yellow-700' : 
                           index === 1 ? 'bg-gray-200 text-gray-700' : 
                           index === 2 ? 'bg-orange-100 text-orange-800' : 'bg-blue-50 text-blue-600'
@@ -1778,11 +1837,11 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                              <Users className="w-4 h-4" />
                            </div>
                         )}
-                        <span className="font-medium text-gray-700 text-sm">{driver.name}</span>
+                        <span className="font-medium text-gray-700 text-base">{driver.name}</span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className="font-bold text-gray-900">{driver.count}</span>
-                        <span className="text-xs text-gray-500">acessos</span>
+                        <span className="font-bold text-lg text-gray-900">{driver.count}</span>
+                        <span className="text-sm text-gray-500">acessos</span>
                       </div>
                     </div>
                   ))
@@ -1795,18 +1854,26 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
 
           {/* Gráfico de Distribuição Diária */}
           <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
-              <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center gap-2">
-                <Calendar className="w-5 h-5 text-gray-500" /> Distribuição Diária
-              </h3>
-              <div className="flex items-center justify-end gap-4 mb-4">
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-sm bg-blue-600"></div>
-                  <span className="text-xs text-gray-600">Entradas</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-sm bg-red-500"></div>
-                  <span className="text-xs text-gray-600">Ocorrências</span>
-                </div>
+              <div className="flex justify-between items-start mb-6">
+                  <h3 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                    <Calendar className="w-5 h-5 text-gray-500" /> Distribuição Diária
+                  </h3>
+                  <div className="flex flex-col items-end">
+                    <div className="flex gap-4 mb-1">
+                        <span className="text-sm font-bold text-gray-400">Total: <span className="text-blue-600">{dailyDistribution.reduce((a, b) => a + b, 0)}</span></span>
+                        <span className="text-sm font-bold text-gray-400">Total: <span className="text-red-600">{occurrencesDailyDistribution.reduce((a, b) => a + b, 0)}</span></span>
+                    </div>
+                    <div className="flex items-center justify-end gap-4">
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 rounded-sm bg-blue-600"></div>
+                      <span className="text-sm text-gray-600">Entradas</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 rounded-sm bg-red-500"></div>
+                      <span className="text-sm text-gray-600">Ocorrências</span>
+                    </div>
+                    </div>
+                  </div>
               </div>
               <div className="h-32 flex items-end gap-2 overflow-x-auto pb-2 pt-6">
                 {dailyDistribution.map((count, index) => {
@@ -1819,13 +1886,13 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                     <div key={index} className="flex-1 flex flex-col items-center justify-end h-full min-w-[40px] group">
                       <div className="flex items-end justify-center gap-1 w-full h-full px-1">
                            <div className="w-full bg-blue-600 rounded-t-sm transition-all duration-500 relative group/bar" style={{ height: `${(count / max) * 100}%` }} title={`Entradas: ${count}`}>
-                              <span className="absolute -top-4 left-1/2 -translate-x-1/2 text-xs font-bold text-blue-600">{count > 0 ? count : ''}</span>
+                              <span className="absolute -top-4 left-1/2 -translate-x-1/2 text-sm font-bold text-blue-600">{count > 0 ? count : ''}</span>
                            </div>
                            <div className="w-full bg-red-500 rounded-t-sm transition-all duration-500 relative group/bar" style={{ height: `${(occCount / max) * 100}%` }} title={`Ocorrências: ${occCount}`}>
-                              <span className="absolute -top-4 left-1/2 -translate-x-1/2 text-xs font-bold text-red-600">{occCount > 0 ? occCount : ''}</span>
+                              <span className="absolute -top-4 left-1/2 -translate-x-1/2 text-sm font-bold text-red-600">{occCount > 0 ? occCount : ''}</span>
                            </div>
                       </div>
-                      <div className="mt-2 text-xs text-gray-500 text-center whitespace-nowrap">
+                      <div className="mt-2 text-sm text-gray-500 text-center whitespace-nowrap">
                         {date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}
                       </div>
                     </div>
@@ -1837,36 +1904,37 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
           {/* Gráfico Comparativo de Empresas (Apenas se houver mais de uma) */}
           {tenants.length > 1 && (
             <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
-              <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center gap-2">
-                <BarChart3 className="w-5 h-5 text-gray-500" /> Comparativo de Registros por Empresa
-              </h3>
-              <div className="flex items-center justify-end gap-4 mb-4">
-                 <div 
-                   className="flex items-center gap-1 cursor-pointer hover:opacity-80 transition-opacity group"
-                   onClick={() => {
-                     const entries = Object.entries(allData.entries).flatMap(([tid, list]) => list.map(e => ({...e, tenantId: tid}))).sort((a, b) => new Date(b.entry_time).getTime() - new Date(a.entry_time).getTime());
-                     generateEntriesPDF(entries);
-                   }}
-                   title="Gerar Relatório de Entradas (PDF)"
-                 >
-                    <div className="w-3 h-3 bg-blue-600 rounded-sm"></div>
-                    <span className="text-xs text-gray-600 group-hover:text-blue-600 group-hover:underline decoration-dotted underline-offset-4">Entradas</span>
-                 </div>
-                 <div 
-                   className="flex items-center gap-1 cursor-pointer hover:opacity-80 transition-opacity group"
-                   onClick={() => {
-                     const occurrences = Object.values(allData.occurrences).flat().sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-                     generateAllOccurrencesPDF(occurrences, 'Todas as Empresas');
-                   }}
-                   title="Gerar Relatório de Ocorrências (PDF)"
-                 >
-                    <div className="w-3 h-3 bg-red-500 rounded-sm"></div>
-                    <span className="text-xs text-gray-600 group-hover:text-red-600 group-hover:underline decoration-dotted underline-offset-4">Ocorrências</span>
-                 </div>
+              <div className="flex justify-between items-start mb-6">
+                  <h3 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                    <BarChart3 className="w-5 h-5 text-gray-500" /> Comparativo de Registros por Empresa
+                  </h3>
+                  <div className="flex flex-col items-end">
+                     <div className="flex gap-4 mb-1">
+                          <span className="text-sm font-bold text-gray-400">Total: <span className="text-blue-600">{companyStats.reduce((acc, curr) => acc + curr.count, 0)}</span></span>
+                          <span className="text-sm font-bold text-gray-400">Total: <span className="text-red-600">{companyStats.reduce((acc, curr) => acc + curr.occurrencesCount, 0)}</span></span>
+                     </div>
+                    <div className="flex items-center justify-end gap-4">
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 rounded-sm bg-blue-600"></div>
+                          <span className="text-sm text-gray-600">Entradas</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 rounded-sm bg-green-500"></div>
+                          <span className="text-sm text-gray-600">Ocorr. Concluídas</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 rounded-sm bg-red-500"></div>
+                          <span className="text-sm text-gray-600">Ocorr. Pendentes</span>
+                        </div>
+                    </div>
+                  </div>
               </div>
               <div className="h-32 flex items-end gap-2 sm:gap-4 pt-4 border-b border-gray-100">
                 {companyStats.map((stat) => {
                   const max = Math.max(...companyStats.map(s => Math.max(s.count, s.occurrencesCount)), 1);
+                  const pendingCount = stat.occurrencesCount - stat.concludedOccurrences;
+                  const isAllConcluded = stat.occurrencesCount > 0 && pendingCount === 0;
+                  const occurrenceTextColor = isAllConcluded ? 'text-green-600' : (stat.occurrencesCount > 0 ? 'text-red-600' : 'text-gray-400');
                   return (
                     <div key={stat.name} className="flex-1 flex flex-col items-center justify-end h-full group">
                       <div className="flex items-end justify-center gap-1 w-full h-full">
@@ -1875,7 +1943,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                              onClick={() => handleBarClick(stat.id, stat.name, 'entries')}
                              title={`Ver detalhes de Entradas: ${stat.count}`}
                            >
-                               <span className="mb-1 text-xs font-bold text-blue-600">{stat.count > 0 ? stat.count : ''}</span>
+                               <span className="mb-1 text-sm font-bold text-blue-600">{stat.count > 0 ? stat.count : ''}</span>
                                <div 
                                  className="w-full bg-blue-600 rounded-t-sm transition-all duration-500 relative" 
                                  style={{ height: `${(stat.count / max) * 100}%` }}
@@ -1884,16 +1952,23 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                            <div 
                              className="flex flex-col items-center justify-end h-full w-1/2 group/bar cursor-pointer transition-opacity hover:opacity-80"
                              onClick={() => handleBarClick(stat.id, stat.name, 'occurrences')}
-                             title={`Ver detalhes de Ocorrências: ${stat.occurrencesCount}`}
+                             title={`Ocorrências: ${stat.occurrencesCount} (Concluídas: ${stat.concludedOccurrences}, Pendentes: ${pendingCount})`}
                            >
-                               <span className="mb-1 text-xs font-bold text-red-600">{stat.occurrencesCount > 0 ? stat.occurrencesCount : ''}</span>
+                               <span className={`mb-1 text-sm font-bold ${occurrenceTextColor}`}>{stat.occurrencesCount > 0 ? stat.occurrencesCount : ''}</span>
                                <div 
-                                 className="w-full bg-red-500 rounded-t-sm transition-all duration-500 relative" 
+                                 className="w-full rounded-t-sm transition-all duration-500 relative flex flex-col justify-end overflow-hidden" 
                                  style={{ height: `${(stat.occurrencesCount / max) * 100}%` }}
-                               ></div>
+                               >
+                                    {pendingCount > 0 && (
+                                        <div style={{ height: `${(pendingCount / stat.occurrencesCount) * 100}%` }} className="w-full bg-red-500"></div>
+                                    )}
+                                    {stat.concludedOccurrences > 0 && (
+                                        <div style={{ height: `${(stat.concludedOccurrences / stat.occurrencesCount) * 100}%` }} className="w-full bg-green-500"></div>
+                                    )}
+                               </div>
                            </div>
                       </div>
-                      <div className="mt-2 text-xs text-gray-500 truncate w-full text-center" title={stat.name}>
+                      <div className="mt-2 text-sm text-gray-500 truncate w-full text-center" title={stat.name}>
                         {stat.name}
                       </div>
                     </div>
@@ -1907,7 +1982,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
         {/* Coluna Lateral (Direita) - Análise de Permanência */}
         <div className="xl:col-span-3">
           <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm h-full flex flex-col">
-             <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2 shrink-0">
+             <h3 className="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2 shrink-0">
                <Timer className="w-5 h-5 text-gray-500" /> Tempos de Permanência
              </h3>
              
@@ -1915,7 +1990,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                 {/* Distribution Bars */}
                 <div className="space-y-4 shrink-0">
                     <div>
-                        <div className="flex justify-between items-center text-sm mb-1">
+                        <div className="flex justify-between items-center text-base mb-1">
                             <div className="flex items-center gap-1 text-gray-600">
                                 <span>Curta Duração (&lt;</span>
                                 <input 
@@ -1927,7 +2002,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                                         setShortDurationLimit(val);
                                         if (val >= mediumDurationLimit) setMediumDurationLimit(val + 1);
                                     }}
-                                    className="w-8 py-0 text-center border border-gray-200 rounded text-xs font-bold text-gray-700 focus:ring-1 focus:ring-blue-500 outline-none"
+                                    className="w-8 py-0 text-center border border-gray-200 rounded text-sm font-bold text-gray-700 focus:ring-1 focus:ring-blue-500 outline-none"
                                 />
                                 <span>h)</span>
                             </div>
@@ -1938,7 +2013,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                         </div>
                     </div>
                     <div>
-                        <div className="flex justify-between items-center text-sm mb-1">
+                        <div className="flex justify-between items-center text-base mb-1">
                             <div className="flex items-center gap-1 text-gray-600">
                                 <span>Média Duração ({shortDurationLimit}h -</span>
                                 <input 
@@ -1946,7 +2021,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                                     min={shortDurationLimit}
                                     value={mediumDurationLimit} 
                                     onChange={(e) => setMediumDurationLimit(Math.max(shortDurationLimit, parseInt(e.target.value) || 0))}
-                                    className="w-8 py-0 text-center border border-gray-200 rounded text-xs font-bold text-gray-700 focus:ring-1 focus:ring-blue-500 outline-none"
+                                    className="w-8 py-0 text-center border border-gray-200 rounded text-sm font-bold text-gray-700 focus:ring-1 focus:ring-blue-500 outline-none"
                                 />
                                 <span>h)</span>
                             </div>
@@ -1957,7 +2032,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                         </div>
                     </div>
                     <div>
-                        <div className="flex justify-between items-center text-sm mb-1">
+                        <div className="flex justify-between items-center text-base mb-1">
                             <span className="text-gray-600">Longa Duração (&gt; {mediumDurationLimit}h)</span>
                             <span className="font-bold text-gray-900">{durationStats.over4h}</span>
                         </div>
@@ -1970,7 +2045,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                 {/* Critical Alerts */}
                 <div className="mt-8 border-t border-gray-100 pt-6 flex-1 flex flex-col min-h-0">
                     <div className="flex justify-between items-center mb-3 shrink-0">
-                        <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2 whitespace-nowrap">
+                        <h4 className="text-base font-bold text-gray-800 flex items-center gap-2 whitespace-nowrap">
                             <AlertTriangle className="w-4 h-4 text-red-500" /> No pátio há mais de
                         </h4>
                         <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-md px-1 shadow-sm">
@@ -1979,9 +2054,9 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                                 min="1" 
                                 value={delayedThreshold} 
                                 onChange={(e) => setDelayedThreshold(Math.max(1, parseInt(e.target.value) || 0))}
-                                className="w-8 py-1 text-xs text-center font-bold text-gray-700 outline-none bg-transparent"
+                                className="w-8 py-1 text-sm text-center font-bold text-gray-700 outline-none bg-transparent"
                             />
-                            <span className="text-xs font-bold text-gray-500 pr-1">h</span>
+                            <span className="text-sm font-bold text-gray-500 pr-1">h</span>
                         </div>
                     </div>
                     
@@ -1992,18 +2067,18 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                                     <div className="flex justify-between items-start">
                                         <div>
                                             <div className="flex items-center gap-2">
-                                                <p className="font-bold text-red-900">{v.plate}</p>
-                                                <span className="bg-white text-red-600 text-[10px] font-bold px-1.5 py-0.5 rounded border border-red-100 shadow-sm">
+                                                <p className="font-bold text-lg text-red-900">{v.plate}</p>
+                                                <span className="bg-white text-red-600 text-xs font-bold px-1.5 py-0.5 rounded border border-red-100 shadow-sm">
                                                     {v.hours}h
                                                 </span>
                                             </div>
-                                            <p className="text-xs text-red-700 font-medium mt-0.5">{v.model}</p>
-                                            <p className="text-[11px] text-red-600/80 flex items-center gap-1 mt-1">
+                                            <p className="text-sm text-red-700 font-medium mt-0.5">{v.model}</p>
+                                            <p className="text-xs text-red-600/80 flex items-center gap-1 mt-1">
                                                 <Users className="w-3 h-3" /> {v.driverName}
                                             </p>
                                         </div>
                                     </div>
-                                    <p className="text-[10px] text-red-500 mt-2 flex items-center gap-1 border-t border-red-100 pt-2">
+                                    <p className="text-xs text-red-500 mt-2 flex items-center gap-1 border-t border-red-100 pt-2">
                                         <Clock className="w-3 h-3" />
                                         Entrada: {new Date(v.entryTime).toLocaleDateString('pt-BR')} {new Date(v.entryTime).toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit'})}
                                     </p>
@@ -2011,7 +2086,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                             ))
                         ) : (
                             <div className="text-center py-6 bg-gray-50 rounded-lg border border-gray-100 border-dashed">
-                                <p className="text-sm text-gray-500">Nenhum veículo excedendo {delayedThreshold}h.</p>
+                                <p className="text-base text-gray-500">Nenhum veículo excedendo {delayedThreshold}h.</p>
                             </div>
                         )}
                     </div>
@@ -2025,7 +2100,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
         <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-0 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="bg-white w-full h-full flex flex-col shadow-2xl animate-in zoom-in-95 duration-200 rounded-none">
             <div className="flex justify-between items-center p-6 border-b border-gray-100">
-              <h3 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+              <h3 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
                 <BarChart3 className="w-6 h-6 text-gray-500" /> Distribuição por Horário (Expandido)
               </h3>
               <button 
@@ -2051,7 +2126,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
         <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200" onClick={() => setSelectedCompanyDetails(null)}>
           <div className="bg-white w-full max-w-4xl max-h-[80vh] flex flex-col shadow-2xl animate-in zoom-in-95 duration-200 rounded-xl overflow-hidden" onClick={e => e.stopPropagation()}>
              <div className="flex justify-between items-center p-6 border-b border-gray-100 bg-gray-50">
-                <h3 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                <h3 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
                     {selectedCompanyDetails.type === 'entries' ? <Truck className="w-6 h-6 text-blue-600" /> : selectedCompanyDetails.type === 'drivers' ? <Users className="w-6 h-6 text-orange-600" /> : <AlertTriangle className="w-6 h-6 text-red-600" />}
                     {selectedCompanyDetails.type === 'entries' ? 'Registros de Entrada' : selectedCompanyDetails.type === 'drivers' ? 'Motoristas' : 'Ocorrências'} - <span className="text-gray-600 font-normal">{selectedCompanyDetails.name}</span>
                 </h3>
@@ -2059,7 +2134,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                     {selectedCompanyDetails.type === 'occurrences' && (
                         <button 
                             onClick={() => generateAllOccurrencesPDF(selectedCompanyDetails.data, selectedCompanyDetails.name)}
-                            className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
+                            className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white text-base font-medium rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
                             title="Gerar PDF com todas as ocorrências listadas"
                         >
                             <Download className="w-4 h-4" />
@@ -2078,34 +2153,34 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                             <div key={entry.id} className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-sm transition-all flex flex-col sm:flex-row justify-between gap-4">
                                 <div>
                                     <div className="flex items-center gap-2 mb-1">
-                                        <span className="font-bold text-lg text-gray-900">{entry.cached_data?.vehicle_plate || '---'}</span>
-                                        <span className="text-sm bg-gray-100 px-2 py-0.5 rounded text-gray-600">{entry.cached_data?.vehicle_model}</span>
+                                        <span className="font-bold text-xl text-gray-900">{entry.cached_data?.vehicle_plate || '---'}</span>
+                                        <span className="text-base bg-gray-100 px-2 py-0.5 rounded text-gray-600">{entry.cached_data?.vehicle_model}</span>
                                     </div>
-                                    <p className="text-base text-gray-600 flex items-center gap-1"><Users className="w-4 h-4" /> {entry.cached_data?.driver_name || 'Motorista não identificado'}</p>
+                                    <p className="text-lg text-gray-600 flex items-center gap-1"><Users className="w-4 h-4" /> {entry.cached_data?.driver_name || 'Motorista não identificado'}</p>
                                     {entry.location && (
                                         <div className="mt-1">
                                             <a 
                                                 href={`https://www.google.com/maps?q=${entry.location.lat},${entry.location.lng}`}
                                                 target="_blank"
                                                 rel="noopener noreferrer"
-                                                className="text-sm text-blue-600 hover:underline flex items-center gap-1"
+                                                className="text-base text-blue-600 hover:underline flex items-center gap-1"
                                                 onClick={(e) => e.stopPropagation()}
                                             >
                                                 <MapPin className="w-4 h-4" /> Ver Localização
                                             </a>
-                                            <span className="text-sm text-gray-500 block ml-5" title={addresses[entry.id] || 'Buscando...'}>
+                                            <span className="text-base text-gray-500 block ml-5" title={addresses[entry.id] || 'Buscando...'}>
                                                 {addresses[entry.id] || 'Buscando endereço...'}
                                             </span>
                                         </div>
                                     )}
-                                    {entry.notes && <p className="text-sm text-gray-500 mt-2 italic">"{entry.notes}"</p>}
+                                    {entry.notes && <p className="text-base text-gray-500 mt-2 italic">"{entry.notes}"</p>}
                                 </div>
                                 <div className="text-right text-base">
-                                    <p className="text-green-600 font-medium">Entrada: {formatDateTime(entry.entry_time)}</p>
+                                    <p className="text-green-600 font-medium text-lg">Entrada: {formatDateTime(entry.entry_time)}</p>
                                     {entry.exit_time ? (
-                                        <p className="text-red-600 font-medium">Saída: {formatDateTime(entry.exit_time)}</p>
+                                        <p className="text-red-600 font-medium text-lg">Saída: {formatDateTime(entry.exit_time)}</p>
                                     ) : (
-                                        <span className="inline-block mt-1 px-2 py-0.5 bg-green-100 text-green-700 text-sm rounded-full font-bold">No Pátio</span>
+                                        <span className="inline-block mt-1 px-2 py-0.5 bg-green-100 text-green-700 text-base rounded-full font-bold">No Pátio</span>
                                     )}
                                 </div>
                             </div>
@@ -2123,8 +2198,8 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                                 <div className="flex justify-between items-start gap-3">
                                     <div className="flex-1 min-w-0">
                                         <div className="flex items-center gap-2 mb-1">
-                                            <h4 className="font-bold text-gray-900 text-base group-hover:text-red-600 transition-colors truncate">{occ.title}</h4>
-                                            <span className={`text-xs font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap ${
+                                            <h4 className="font-bold text-gray-900 text-lg group-hover:text-red-600 transition-colors truncate">{occ.title}</h4>
+                                            <span className={`text-sm font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap ${
                                                 occ.status === 'Concluída' ? 'bg-green-100 text-green-800' : 
                                                 occ.status === 'Em Andamento' ? 'bg-yellow-100 text-yellow-800' : 
                                                 occ.status === 'Parada' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-800'
@@ -2132,17 +2207,17 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                                                 {occ.status || 'Pendente'}
                                             </span>
                                             {occ.signature_by && (
-                                                <span className="text-xs text-gray-500 font-medium truncate max-w-[120px]" title={`Usuário: ${occ.signature_by}`}>
+                                                <span className="text-sm text-gray-500 font-medium truncate max-w-[120px]" title={`Usuário: ${occ.signature_by}`}>
                                                     • {occ.signature_by}
                                                 </span>
                                             )}
-                                            <span className="text-xs text-gray-400 ml-auto shrink-0">{formatDateTime(occ.created_at)}</span>
+                                            <span className="text-sm text-gray-400 ml-auto shrink-0">{formatDateTime(occ.created_at)}</span>
                                         </div>
                                         
-                                        <p className="text-sm text-gray-600 line-clamp-2 mb-1">{occ.description}</p>
+                                        <p className="text-base text-gray-600 line-clamp-2 mb-1">{occ.description}</p>
                                         
                                 {occ.action_taken && (
-                                            <div className="text-sm text-gray-500 bg-gray-50 p-1.5 rounded border border-gray-100 mt-1">
+                                            <div className="text-base text-gray-500 bg-gray-50 p-1.5 rounded border border-gray-100 mt-1">
                                                 <span className="font-semibold text-gray-700">Ação:</span> <span className="line-clamp-1 inline">{occ.action_taken}</span>
                                     </div>
                                 )}
@@ -2172,11 +2247,11 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                                     </div>
                                 )}
                                 <div>
-                                    <h4 className="font-bold text-gray-900">{driver.name || 'Sem Nome'}</h4>
-                                    <p className="text-sm text-gray-600">CPF: {driver.document}</p>
-                                    {driver.cnh && <p className="text-xs text-gray-500">CNH: {driver.cnh} {driver.cnh_category ? `(${driver.cnh_category})` : ''}</p>}
+                                    <h4 className="font-bold text-lg text-gray-900">{driver.name || 'Sem Nome'}</h4>
+                                    <p className="text-base text-gray-600">CPF: {driver.document}</p>
+                                    {driver.cnh && <p className="text-sm text-gray-500">CNH: {driver.cnh} {driver.cnh_category ? `(${driver.cnh_category})` : ''}</p>}
                                     {driver.cnh_validity && (
-                                        <p className={`text-xs mt-1 ${new Date(driver.cnh_validity) < new Date() ? 'text-red-600 font-bold' : 'text-green-600'}`}>
+                                        <p className={`text-sm mt-1 ${new Date(driver.cnh_validity) < new Date() ? 'text-red-600 font-bold' : 'text-green-600'}`}>
                                             Validade: {new Date(driver.cnh_validity).toLocaleDateString('pt-BR')}
                                         </p>
                                     )}
@@ -2195,7 +2270,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
         <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200" onClick={() => setShowOccupancyModal(false)}>
           <div className="bg-white w-full max-w-2xl shadow-2xl animate-in zoom-in-95 duration-200 rounded-xl overflow-hidden" onClick={e => e.stopPropagation()}>
              <div className="flex justify-between items-center p-6 border-b border-gray-100 bg-gray-50">
-                <h3 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                <h3 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
                     <Car className="w-6 h-6 text-cyan-600" />
                     Eficiência de Ocupação
                 </h3>
@@ -2206,23 +2281,23 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
              <div className="p-6">
                 <div className="grid grid-cols-3 gap-4 mb-8 text-center">
                     <div className="bg-gray-50 p-4 rounded-lg">
-                        <p className="text-sm text-gray-500">Total de Vagas</p>
-                        <p className="text-2xl font-bold text-gray-800">{totalSpots}</p>
+                        <p className="text-base text-gray-500">Total de Vagas</p>
+                        <p className="text-3xl font-bold text-gray-800">{totalSpots}</p>
                     </div>
                     <div className="bg-blue-50 p-4 rounded-lg">
-                        <p className="text-sm text-blue-600">Ocupadas</p>
-                        <p className="text-2xl font-bold text-blue-700">{metrics.vehiclesInside}</p>
+                        <p className="text-base text-blue-600">Ocupadas</p>
+                        <p className="text-3xl font-bold text-blue-700">{realTimeVehiclesInside}</p>
                     </div>
                     <div className="bg-green-50 p-4 rounded-lg">
-                        <p className="text-sm text-green-600">Disponíveis</p>
-                        <p className="text-2xl font-bold text-green-700">{availableSpots}</p>
+                        <p className="text-base text-green-600">Disponíveis</p>
+                        <p className="text-3xl font-bold text-green-700">{availableSpots}</p>
                     </div>
                 </div>
 
                 <div className="mb-8">
-                    <div className="flex justify-between text-sm mb-1">
+                    <div className="flex justify-between text-base mb-1">
                         <span className="font-medium text-gray-700">Taxa de Ocupação Global</span>
-                        <span className="font-bold text-gray-900">{totalSpots > 0 ? ((metrics.vehiclesInside / totalSpots) * 100).toFixed(1) : 0}%</span>
+                        <span className="font-bold text-lg text-gray-900">{totalSpots > 0 ? ((metrics.vehiclesInside / totalSpots) * 100).toFixed(1) : 0}%</span>
                     </div>
                     <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden">
                         <div 
@@ -2237,19 +2312,18 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
 
                 {tenants.length > 1 && (
                     <div>
-                        <h4 className="font-bold text-gray-800 mb-4">Detalhamento por Unidade</h4>
+                        <h4 className="font-bold text-lg text-gray-800 mb-4">Detalhamento por Unidade</h4>
                         <div className="space-y-4 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
-                            {tenants.filter(t => activeTenantId === 'all' || t.id === activeTenantId).map(t => {
-                                const tEntries = allData.entries[t.id] || [];
-                                const tOccupied = tEntries.filter(e => !e.exit_time).length;
+                            {tenants.filter(t => activeTenantId === 'all' || t.id === activeTenantId).map(t => {                                
+                                const tOccupied = (vehiclesInsideData[t.id] || []).length;
                                 const tTotal = t.parkingSpots || 0;
                                 const tPercent = tTotal > 0 ? (tOccupied / tTotal) * 100 : 0;
                                 
                                 return (
                                     <div key={t.id} className="border-b border-gray-100 pb-3 last:border-0">
                                         <div className="flex justify-between items-center mb-1">
-                                            <span className="font-medium text-gray-700">{t.name}</span>
-                                            <span className="text-xs text-gray-500">{tOccupied} / {tTotal} vagas ({tPercent.toFixed(0)}%)</span>
+                                            <span className="font-medium text-lg text-gray-700">{t.name}</span>
+                                            <span className="text-sm text-gray-500">{tOccupied} / {tTotal} vagas ({tPercent.toFixed(0)}%)</span>
                                         </div>
                                         <div className="w-full bg-gray-100 rounded-full h-2">
                                             <div 
