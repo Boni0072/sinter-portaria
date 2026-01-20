@@ -495,7 +495,6 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Placa</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Marca</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Modelo</th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cor</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Observação</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Motorista</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Usuário</th>
@@ -514,7 +513,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
                     className="bg-gray-100 border-y border-gray-200 cursor-pointer hover:bg-gray-200 transition-colors"
                     onClick={() => toggleGroup(group.date)}
                   >
-                    <td colSpan={12} className="px-6 py-2 text-sm font-bold text-gray-700">
+                    <td colSpan={13} className="px-6 py-2 text-sm font-bold text-gray-700">
                       <div className="flex items-center">
                         {!expandedGroups.has(group.date) ? (
                           <ChevronRight className="w-4 h-4 mr-2" />
@@ -544,9 +543,6 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
                   </td>
                   <td className="px-6 py-2 whitespace-nowrap">
                     <span className="text-sm text-gray-900">{entry.vehicle.model}</span>
-                  </td>
-                  <td className="px-6 py-2 whitespace-nowrap">
-                    <span className="text-sm text-gray-500">{entry.vehicle.color}</span>
                   </td>
                   <td className="px-6 py-2 whitespace-nowrap">
                     {entry.notes ? (

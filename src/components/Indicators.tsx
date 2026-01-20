@@ -13,6 +13,7 @@ interface DashboardMetrics {
   busiestHour: number;
   totalDrivers: number;
   totalOccurrences: number;
+  concludedOccurrences: number;
 }
 
 interface TopDriver {
@@ -42,12 +43,14 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
     completedVisits: 0,
     busiestHour: 0,
     totalDrivers: 0,
-    totalOccurrences: 0
+    totalOccurrences: 0,
+    concludedOccurrences: 0
   });
   const [hourlyDistribution, setHourlyDistribution] = useState<number[]>(new Array(24).fill(0));
   const [occurrencesHourlyDistribution, setOccurrencesHourlyDistribution] = useState<number[]>(new Array(24).fill(0));
   const [dailyDistribution, setDailyDistribution] = useState<number[]>([]);
   const [occurrencesDailyDistribution, setOccurrencesDailyDistribution] = useState<number[]>([]);
+  const [dailyOccurrencesStats, setDailyOccurrencesStats] = useState<{concluded: number, pending: number}[]>([]);
   const [topDrivers, setTopDrivers] = useState<TopDriver[]>([]);
   const [tenants, setTenants] = useState<{id: string, name: string, address?: string, lat?: string, lon?: string, geocoded?: boolean, parkingSpots?: number}[]>([]);
   const [selectedTenantId, setSelectedTenantId] = useState<string>('');
@@ -406,6 +409,8 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
     const safeTotalDays = Math.max(totalDays, 1);
     const daysCount = new Array(safeTotalDays).fill(0);
     const occurrencesDaysCount = new Array(safeTotalDays).fill(0);
+    const occurrencesDaysBreakdown = new Array(safeTotalDays).fill(null).map(() => ({ concluded: 0, pending: 0 }));
+    let concludedOccurrencesCount = 0;
 
     const driverStats: Record<string, { count: number, photo_url?: string }> = {};
     
@@ -450,6 +455,9 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
     });
 
     occurrences.forEach((occ: any) => {
+      if (occ.status === 'Concluída') {
+        concludedOccurrencesCount++;
+      }
       const occTime = new Date(occ.created_at).getTime();
       const diff = occTime - rangeStartForCalc.getTime();
       const idx = Math.floor(diff / (1000 * 60 * 60));
@@ -460,6 +468,11 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
       const diffOccDays = Math.floor((occTime - rangeStartForCalc.getTime()) / (1000 * 60 * 60 * 24));
       if (diffOccDays >= 0 && diffOccDays < occurrencesDaysCount.length) {
           occurrencesDaysCount[diffOccDays]++;
+          if (occ.status === 'Concluída') {
+              occurrencesDaysBreakdown[diffOccDays].concluded++;
+          } else {
+              occurrencesDaysBreakdown[diffOccDays].pending++;
+          }
       }
     });
 
@@ -479,13 +492,15 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
       completedVisits: completedVisits,
       busiestHour: busiestHourIndex,
       totalDrivers: totalDrivers,
-      totalOccurrences: occurrences.length
+      totalOccurrences: occurrences.length,
+      concludedOccurrences: concludedOccurrencesCount
     });
 
     setHourlyDistribution(hoursCount);
     setOccurrencesHourlyDistribution(occurrencesHoursCount);
     setDailyDistribution(daysCount);
     setOccurrencesDailyDistribution(occurrencesDaysCount);
+    setDailyOccurrencesStats(occurrencesDaysBreakdown);
     setTopDrivers(sortedDrivers);
     // Company Stats
     if (tenants.length > 1) {
@@ -1584,7 +1599,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                   <AlertTriangle className="w-5 h-5 text-red-600" />
                 </div>
               </div>
-              <div className="mt-2 text-sm text-red-800">No período selecionado</div>
+              <div className="mt-2 text-sm text-red-800"><span className="font-bold">{metrics.totalOccurrences - metrics.concludedOccurrences}</span> Pendentes</div>
             </div>
           </div>
 
@@ -1881,6 +1896,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                   const date = new Date(chartStartDate);
                   date.setDate(date.getDate() + index);
                   const occCount = occurrencesDailyDistribution[index];
+                  const occStats = dailyOccurrencesStats[index] || { concluded: 0, pending: 0 };
                   
                   return (
                     <div key={index} className="flex-1 flex flex-col items-center justify-end h-full min-w-[40px] group">
@@ -1888,8 +1904,18 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                            <div className="w-full bg-blue-600 rounded-t-sm transition-all duration-500 relative group/bar" style={{ height: `${(count / max) * 100}%` }} title={`Entradas: ${count}`}>
                               <span className="absolute -top-4 left-1/2 -translate-x-1/2 text-sm font-bold text-blue-600">{count > 0 ? count : ''}</span>
                            </div>
-                           <div className="w-full bg-red-500 rounded-t-sm transition-all duration-500 relative group/bar" style={{ height: `${(occCount / max) * 100}%` }} title={`Ocorrências: ${occCount}`}>
+                           <div className="w-full rounded-t-sm transition-all duration-500 relative flex flex-col justify-end overflow-hidden group/bar" style={{ height: `${(occCount / max) * 100}%` }} title={`Ocorrências: ${occCount} (Concluídas: ${occStats.concluded}, Pendentes: ${occStats.pending})`}>
                               <span className="absolute -top-4 left-1/2 -translate-x-1/2 text-sm font-bold text-red-600">{occCount > 0 ? occCount : ''}</span>
+                              {occStats.pending > 0 && (
+                                  <div style={{ height: `${(occStats.pending / occCount) * 100}%` }} className="w-full bg-red-500 flex items-center justify-center">
+                                      <span className="text-[10px] font-bold text-white">{occStats.pending}</span>
+                                  </div>
+                              )}
+                              {occStats.concluded > 0 && (
+                                  <div style={{ height: `${(occStats.concluded / occCount) * 100}%` }} className="w-full bg-green-500 flex items-center justify-center">
+                                      <span className="text-[10px] font-bold text-white">{occStats.concluded}</span>
+                                  </div>
+                              )}
                            </div>
                       </div>
                       <div className="mt-2 text-sm text-gray-500 text-center whitespace-nowrap">
@@ -1960,10 +1986,14 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                                  style={{ height: `${(stat.occurrencesCount / max) * 100}%` }}
                                >
                                     {pendingCount > 0 && (
-                                        <div style={{ height: `${(pendingCount / stat.occurrencesCount) * 100}%` }} className="w-full bg-red-500"></div>
+                                        <div style={{ height: `${(pendingCount / stat.occurrencesCount) * 100}%` }} className="w-full bg-red-500 flex items-center justify-center">
+                                            <span className="text-[10px] font-bold text-white">{pendingCount}</span>
+                                        </div>
                                     )}
                                     {stat.concludedOccurrences > 0 && (
-                                        <div style={{ height: `${(stat.concludedOccurrences / stat.occurrencesCount) * 100}%` }} className="w-full bg-green-500"></div>
+                                        <div style={{ height: `${(stat.concludedOccurrences / stat.occurrencesCount) * 100}%` }} className="w-full bg-green-500 flex items-center justify-center">
+                                            <span className="text-[10px] font-bold text-white">{stat.concludedOccurrences}</span>
+                                        </div>
                                     )}
                                </div>
                            </div>
