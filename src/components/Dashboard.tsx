@@ -29,9 +29,6 @@ export default function Dashboard() {
   const [portalTitle, setPortalTitle] = useState(localStorage.getItem('portal_title') || 'Sistema de Portaria');
   const [portalSubtitle, setPortalSubtitle] = useState(localStorage.getItem('portal_subtitle') || 'Controle de Acesso');
   const [isEditingTitle, setIsEditingTitle] = useState(false);
-  const [showIntro, setShowIntro] = useState(true);
-  const [videoPlaying, setVideoPlaying] = useState(false);
-  const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [availableTenants, setAvailableTenants] = useState<Tenant[]>([]);
@@ -164,29 +161,6 @@ export default function Dashboard() {
     }
   };
 
-  const handleStartIntro = () => {
-    setVideoPlaying(true);
-    setTimeout(() => {
-      if (videoRef.current) {
-        videoRef.current.play().catch(err => console.error("Erro ao reproduzir vídeo:", err));
-        try {
-            if (videoRef.current.requestFullscreen) {
-                videoRef.current.requestFullscreen();
-            }
-        } catch (e) {
-            console.log("Fullscreen bloqueado ou não suportado");
-        }
-      }
-    }, 100);
-  };
-
-  const handleIntroEnd = () => {
-    if (document.fullscreenElement) {
-        document.exitFullscreen().catch(() => {});
-    }
-    setShowIntro(false);
-    sessionStorage.setItem('intro_seen', 'true');
-  };
 
   // Função auxiliar para verificar permissão de página
   const canAccess = (pageId: string) => {
@@ -229,55 +203,6 @@ export default function Dashboard() {
       <div className="flex items-center justify-center min-h-screen bg-gray-50">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-900"></div>
       </div>
-    );
-  }
-
-  if (showIntro) {
-    return (
-        <div className="fixed inset-0 z-[9999] bg-gray-900 flex flex-col items-center justify-center">
-            {!videoPlaying ? (
-                <div className="text-center animate-in fade-in zoom-in duration-500 p-8">
-                    {customLogo && (
-                        <img 
-                            src={customLogo} 
-                            alt="Logo" 
-                            className="w-32 h-32 object-contain mx-auto mb-8 drop-shadow-2xl" 
-                        />
-                    )}
-                    <h1 className="text-4xl font-bold text-white mb-2">{portalTitle}</h1>
-                    <p className="text-blue-200 text-lg mb-12">{portalSubtitle}</p>
-                    
-                    <button 
-                        onClick={handleStartIntro}
-                        className="group relative px-8 py-4 bg-blue-600 hover:bg-blue-500 text-white text-xl font-bold rounded-full transition-all transform hover:scale-105 shadow-[0_0_20px_rgba(37,99,235,0.5)] flex items-center gap-3 mx-auto overflow-hidden"
-                    >
-                        <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
-                        <span className="relative">Entrar no Sistema</span>
-                        <ChevronRight className="w-6 h-6 relative group-hover:translate-x-1 transition-transform" />
-                    </button>
-                </div>
-            ) : (
-                <div className="w-full h-full bg-black relative">
-                    <video 
-                        ref={videoRef}
-                        src="/video.mp4" 
-                        className="w-full h-full object-contain"
-                        onEnded={handleIntroEnd}
-                        playsInline
-                        autoPlay
-                    >
-                        <source src="/video.mp4" type="video/mp4" />
-                        Seu navegador não suporta a tag de vídeo.
-                    </video>
-                    <button 
-                        onClick={handleIntroEnd}
-                        className="absolute top-8 right-8 text-white/50 hover:text-white border border-white/30 hover:border-white rounded-full px-6 py-2 text-sm transition-all z-50 backdrop-blur-sm hover:bg-white/10"
-                    >
-                        Pular
-                    </button>
-                </div>
-            )}
-        </div>
     );
   }
 
