@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect, Fragment } from 'react';
-import { db } from './firebase';
-import { collection, addDoc, getDocs, query, where, doc, getDoc, setDoc, orderBy, documentId, onSnapshot, updateDoc } from 'firebase/firestore';
+import { auth } from './firebase';
+import { getDatabase, ref, push, set, update, onValue, get, query, orderByChild, equalTo } from 'firebase/database';
 import { useAuth } from '../contexts/AuthContext';
-import { Save, Camera, Upload, AlertTriangle, X, Building2, User, ChevronDown, ChevronUp, Package, Shield, Car, ChevronRight, PenTool, Eraser, Edit, ChevronsDown, ChevronsUp } from 'lucide-react';
+import { Save, Camera, Upload, AlertTriangle, X, Building2, User, ChevronDown, ChevronUp, Package, Shield, Car, ChevronRight, PenTool, Eraser, Edit, ChevronsDown, ChevronsUp, Download, FileText } from 'lucide-react';
 
 interface Props {
   onSuccess: () => void;
@@ -23,6 +23,7 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
   const [isFormVisible, setIsFormVisible] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set([new Date().toLocaleDateString('pt-BR')]));
+  const [viewOccurrence, setViewOccurrence] = useState<any | null>(null);
   
   const [isSignatureModalOpen, setIsSignatureModalOpen] = useState(false);
   const [signingOccurrenceId, setSigningOccurrenceId] = useState<string | null>(null);
@@ -34,6 +35,8 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
   const [tempStatus, setTempStatus] = useState('');
   const [actionTaken, setActionTaken] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [statusPhotos, setStatusPhotos] = useState<(File | null)[]>([null, null]);
+  const [statusPhotoPreviews, setStatusPhotoPreviews] = useState<(string | null)[]>([null, null]);
 
   // Novos estados para Material de Carga e Armamento
   const [cargoMaterial, setCargoMaterial] = useState({
@@ -62,6 +65,9 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
   });
 
   const photoRefs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)];
+  const statusPhotoRefs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)];
+
+  const database = getDatabase(auth.app);
 
   useEffect(() => {
     const initTenants = async () => {
@@ -74,26 +80,27 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
         let list: {id: string, name: string}[] = [];
 
         if (allowedTenants && Array.isArray(allowedTenants) && allowedTenants.length > 0) {
-          const promises = allowedTenants.map(id => getDoc(doc(db, 'tenants', id)));
-          const docs = await Promise.all(promises);
-          list = docs
-            .filter(d => d.exists())
-            .map(d => ({ id: d.id, name: d.data()?.name || 'Empresa sem nome' }));
+          const promises = allowedTenants.map(id => get(ref(database, `tenants/${id}`)));
+          const snapshots = await Promise.all(promises);
+          snapshots.forEach((snap, index) => {
+            if (snap.exists()) {
+              list.push({ id: allowedTenants[index], name: snap.val().name });
+            }
+          });
         } else {
-          const q = query(collection(db, 'tenants'), where('created_by', '==', user.uid));
-          const snapshot = await getDocs(q);
-          if (!snapshot.empty) {
-            list = snapshot.docs.map(doc => ({
-              id: doc.id,
-              name: doc.data().name || 'Empresa sem nome'
-            }));
+          const q = query(ref(database, 'tenants'), orderByChild('owner_id'), equalTo(user.uid));
+          const snapshot = await get(q);
+          if (snapshot.exists()) {
+            snapshot.forEach(child => {
+              list.push({ id: child.key!, name: child.val().name });
+            });
           }
         }
         
         if (list.length === 0 && defaultId) {
-           const docSnap = await getDoc(doc(db, 'tenants', defaultId));
-           if (docSnap.exists()) {
-             list.push({ id: docSnap.id, name: docSnap.data().name || 'Minha Empresa' });
+           const snap = await get(ref(database, `tenants/${defaultId}`));
+           if (snap.exists()) {
+             list.push({ id: defaultId, name: snap.val().name || 'Minha Empresa' });
            }
         }
 
@@ -120,38 +127,34 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
   useEffect(() => {
     if (!currentTenantId) return;
 
-    const q = query(
-      collection(db, 'tenants', currentTenantId, 'occurrences'),
-      orderBy('created_at', 'desc')
-    );
+    const occurrencesRef = ref(database, `tenants/${currentTenantId}/occurrences`);
+    const q = query(occurrencesRef, orderByChild('created_at'));
 
-    const unsubscribe = onSnapshot(q, async (snapshot) => {
-      const occurrencesList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const unsubscribe = onValue(q, async (snapshot) => {
+      const occurrencesList: any[] = [];
+      if (snapshot.exists()) {
+        snapshot.forEach((child) => {
+          occurrencesList.push({ id: child.key!, ...child.val() });
+        });
+      }
+      occurrencesList.reverse(); // Descending order
 
       // Buscar dados dos usuários que criaram as ocorrências
       const userIds = [...new Set(occurrencesList.map((o: any) => o.created_by).filter(Boolean))];
       const usersMap = new Map();
 
       try {
-        if (userIds.length > 0) {
-          const chunks = [];
-          for (let i = 0; i < userIds.length; i += 10) {
-            chunks.push(userIds.slice(i, i + 10));
-          }
-          
-          for (const chunk of chunks) {
-              const qUsers = query(collection(db, 'profiles'), where(documentId(), 'in', chunk));
-              const snapUsers = await getDocs(qUsers);
-              snapUsers.forEach(doc => {
-                  const data = doc.data();
-                  usersMap.set(doc.id, { 
-                      name: data.name || data.email?.split('@')[0] || 'Usuário', 
-                      photo_url: data.photo_url,
-                      email: data.email 
-                  });
-              });
-          }
-        }
+        await Promise.all(userIds.map(async (uid) => {
+            const snap = await get(ref(database, `profiles/${uid}`));
+            if (snap.exists()) {
+                const data = snap.val();
+                usersMap.set(uid, { 
+                    name: data.name || data.email?.split('@')[0] || 'Usuário', 
+                    photo_url: data.photo_url,
+                    email: data.email 
+                });
+            }
+        }));
       } catch (userErr) {
         console.warn("Não foi possível carregar detalhes dos usuários:", userErr);
       }
@@ -181,6 +184,20 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
       newPreviews[index] = null;
     }
     setPhotoPreviews(newPreviews);
+  };
+
+  const handleStatusPhotoChange = (index: number, file: File | null) => {
+    const newPhotos = [...statusPhotos];
+    newPhotos[index] = file;
+    setStatusPhotos(newPhotos);
+
+    const newPreviews = [...statusPhotoPreviews];
+    if (file) {
+      newPreviews[index] = URL.createObjectURL(file);
+    } else {
+      newPreviews[index] = null;
+    }
+    setStatusPhotoPreviews(newPreviews);
   };
 
   const convertFileToBase64 = (file: File): Promise<string> => {
@@ -234,7 +251,8 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
       const photoUrls = await Promise.all(photoPromises);
       const validPhotoUrls = photoUrls.filter(url => url !== null) as string[];
 
-      await addDoc(collection(db, 'tenants', currentTenantId, 'occurrences'), {
+      const newOccurrenceRef = push(ref(database, `tenants/${currentTenantId}/occurrences`));
+      await set(newOccurrenceRef, {
         title,
         description,
         cargo_material: cargoMaterial,
@@ -300,6 +318,39 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
     return (occ.status || 'Pendente') === statusFilter;
   });
 
+  const handleExportCSV = () => {
+    if (filteredOccurrences.length === 0) return;
+
+    const csvContent = [
+      ['Empresa', 'Data Registro', 'Hora Registro', 'Data Conclusão', 'Hora Conclusão', 'Usuário', 'Título', 'Descrição', 'Status', 'Ação Realizada', 'Fotos Evidência', 'Fotos Conclusão'],
+      ...filteredOccurrences.map(occ => [
+        tenants.find(t => t.id === currentTenantId)?.name || '---',
+        new Date(occ.created_at).toLocaleDateString('pt-BR'),
+        new Date(occ.created_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+        occ.completed_at ? new Date(occ.completed_at).toLocaleDateString('pt-BR') : '',
+        occ.completed_at ? new Date(occ.completed_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : '',
+        occ.creator?.name || 'Desconhecido',
+        (occ.title || '').replace(/"/g, '""'),
+        (occ.description || '').replace(/"/g, '""'),
+        occ.status || 'Pendente',
+        (occ.action_taken || '').replace(/"/g, '""'),
+        (occ.photos || []).join('; '),
+        (occ.completion_photos || []).join('; ')
+      ])
+    ]
+    .map(e => e.map(field => `"${field}"`).join(','))
+    .join('\n');
+
+    const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `ocorrencias_${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const groupedOccurrences = filteredOccurrences.reduce((acc, occ) => {
     const occDate = new Date(occ.created_at);
     const date = occDate.toLocaleDateString('pt-BR');
@@ -363,7 +414,7 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
     
     try {
         const signatureUrl = signatureCanvasRef.current.toDataURL('image/png');
-        await updateDoc(doc(db, 'tenants', currentTenantId, 'occurrences', signingOccurrenceId), {
+        await update(ref(database, `tenants/${currentTenantId}/occurrences/${signingOccurrenceId}`), {
             signature_url: signatureUrl,
             signature_at: new Date().toISOString(),
             signature_by: (userProfile as any)?.name || user?.email || 'Usuário',
@@ -393,11 +444,20 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
             updateData.completed_at = new Date().toISOString();
             updateData.completed_by = user?.uid;
         }
+        
+        const photoPromises = statusPhotos.map(photo => photo ? convertFileToBase64(photo) : Promise.resolve(null));
+        const photoUrls = await Promise.all(photoPromises);
+        const validPhotoUrls = photoUrls.filter(url => url !== null) as string[];
+        if (validPhotoUrls.length > 0) {
+            updateData.completion_photos = validPhotoUrls;
+        }
 
-        await updateDoc(doc(db, 'tenants', currentTenantId, 'occurrences', editingStatusId), updateData);
+        await update(ref(database, `tenants/${currentTenantId}/occurrences/${editingStatusId}`), updateData);
         setIsStatusModalOpen(false);
         setEditingStatusId(null);
         setActionTaken('');
+        setStatusPhotos([null, null]);
+        setStatusPhotoPreviews([null, null]);
     } catch (error) {
         console.error("Error updating status", error);
         alert("Erro ao atualizar status");
@@ -729,6 +789,14 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
                     <option value="Concluída">Concluída</option>
                 </select>
                 </div>
+                <button
+                  onClick={handleExportCSV}
+                  disabled={filteredOccurrences.length === 0}
+                  className="flex items-center gap-2 px-3 py-1.5 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+                >
+                  <Download className="w-4 h-4" />
+                  Exportar Excel
+                </button>
             </div>
         </div>
         <div className="bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
@@ -736,13 +804,15 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Empresa</th>
-                <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Data</th>
+                <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Registro</th>
+                <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Conclusão</th>
                 <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Usuário</th>
                 <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Título</th>
                 <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Descrição</th>
                 <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Status</th>
                 <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Ação Realizada</th>
                 <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Evidências</th>
+                <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Fotos Conclusão</th>
                 <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Ações</th>
               </tr>
             </thead>
@@ -753,7 +823,7 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
                     className="bg-gray-100 border-y border-gray-200 cursor-pointer hover:bg-gray-200 transition-colors"
                     onClick={() => toggleGroup(group.date)}
                   >
-                    <td colSpan={7} className="px-6 py-2 text-sm font-bold text-gray-700">
+                    <td colSpan={11} className="px-6 py-2 text-sm font-bold text-gray-700">
                       <div className="flex items-center">
                         {!expandedGroups.has(group.date) ? (
                           <ChevronRight className="w-4 h-4 mr-2" />
@@ -771,12 +841,15 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
                     </td>
                   </tr>
                   {expandedGroups.has(group.date) && group.items.map((occ) => (
-                <tr key={occ.id} className="hover:bg-gray-50">
+                <tr key={occ.id} className="hover:bg-gray-50 cursor-pointer transition-colors" onClick={() => setViewOccurrence(occ)}>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                     {tenants.find(t => t.id === currentTenantId)?.name || '---'}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                     {new Date(occ.created_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    {occ.completed_at ? new Date(occ.completed_at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="flex items-center">
@@ -820,6 +893,20 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
                             />
                         ))}
                         {(!occ.photos || occ.photos.length === 0) && <span className="text-gray-400 italic">Sem fotos</span>}
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    <div className="flex -space-x-2 overflow-hidden">
+                        {occ.completion_photos?.map((photo: string, idx: number) => (
+                            <img 
+                                key={idx} 
+                                src={photo} 
+                                alt={`Conclusão ${idx+1}`}
+                                className="inline-block h-10 w-10 rounded-full ring-2 ring-white object-cover cursor-pointer hover:scale-110 transition-transform"
+                                onClick={() => setZoomedImage(photo)}
+                            />
+                        ))}
+                        {(!occ.completion_photos || occ.completion_photos.length === 0) && <span className="text-gray-400 italic">---</span>}
                     </div>
                   </td>
                   <td className="px-6 py-4 text-sm text-gray-500">
@@ -882,7 +969,7 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
               ))}
               {occurrences.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-6 py-8 text-center text-sm text-gray-500">
+                  <td colSpan={11} className="px-6 py-8 text-center text-sm text-gray-500">
                     Nenhuma ocorrência registrada nesta empresa.
                   </td>
                 </tr>
@@ -894,7 +981,7 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
 
       {zoomedImage && (
         <div 
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/95 backdrop-blur-sm animate-in fade-in duration-200 p-4"
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/95 backdrop-blur-sm animate-in fade-in duration-200 p-4"
           onClick={() => setZoomedImage(null)}
         >
           <img 
@@ -979,7 +1066,11 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
             <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6" onClick={e => e.stopPropagation()}>
                 <div className="flex justify-between items-center mb-4">
                     <h3 className="text-lg font-bold text-gray-800">Alterar Status</h3>
-                    <button onClick={() => setIsStatusModalOpen(false)} className="text-gray-400 hover:text-gray-600">
+                    <button onClick={() => {
+                        setIsStatusModalOpen(false);
+                        setStatusPhotos([null, null]);
+                        setStatusPhotoPreviews([null, null]);
+                    }} className="text-gray-400 hover:text-gray-600">
                         <X className="w-6 h-6" />
                     </button>
                 </div>
@@ -999,22 +1090,209 @@ export default function RegisterOccurrence({ onSuccess, tenantId: propTenantId }
                 </div>
 
                 {tempStatus === 'Concluída' && (
-                    <div className="mb-6">
-                        <label className="block text-sm font-medium text-gray-700 mb-2">Ação Realizada <span className="text-red-500">*</span></label>
-                        <textarea
-                            value={actionTaken}
-                            onChange={(e) => setActionTaken(e.target.value)}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 h-24 resize-none"
-                            placeholder="Descreva a ação tomada para concluir a ocorrência..."
-                        />
+                    <div className="mb-6 space-y-4">
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">Ação Realizada <span className="text-red-500">*</span></label>
+                            <textarea
+                                value={actionTaken}
+                                onChange={(e) => setActionTaken(e.target.value)}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 h-24 resize-none"
+                                placeholder="Descreva a ação tomada para concluir a ocorrência..."
+                            />
+                        </div>
+                        
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">Evidências da Conclusão (Opcional)</label>
+                            <div className="grid grid-cols-2 gap-4">
+                                {[0, 1].map((index) => (
+                                    <div key={index}>
+                                        <input
+                                            ref={statusPhotoRefs[index]}
+                                            type="file"
+                                            accept="image/*"
+                                            onChange={(e) => handleStatusPhotoChange(index, e.target.files?.[0] || null)}
+                                            className="hidden"
+                                        />
+                                        <div 
+                                            onClick={() => statusPhotoRefs[index].current?.click()}
+                                            className={`
+                                                relative w-full h-24 border-2 border-dashed rounded-lg flex flex-col items-center justify-center cursor-pointer transition-all group overflow-hidden
+                                                ${statusPhotos[index] ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50'}
+                                            `}
+                                        >
+                                            {statusPhotoPreviews[index] ? (
+                                                <div className="relative w-full h-full group">
+                                                    <img src={statusPhotoPreviews[index]!} alt={`Evidência ${index + 1}`} className="w-full h-full object-cover" />
+                                                    <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                                                        <Camera className="w-6 h-6 text-white mb-1" />
+                                                        <span className="text-white text-[10px] font-medium">Alterar</span>
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <div className="flex flex-col items-center text-center p-1">
+                                                    <Camera className="w-5 h-5 text-gray-400 mb-1" />
+                                                    <span className="text-[10px] text-gray-500">Foto {index + 1}</span>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
                     </div>
                 )}
 
                 <div className="flex justify-end gap-2">
-                    <button onClick={() => setIsStatusModalOpen(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">Cancelar</button>
+                    <button onClick={() => {
+                        setIsStatusModalOpen(false);
+                        setStatusPhotos([null, null]);
+                        setStatusPhotoPreviews([null, null]);
+                    }} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">Cancelar</button>
                     <button onClick={handleUpdateStatus} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">Salvar</button>
                 </div>
             </div>
+        </div>
+      )}
+
+      {/* Modal de Detalhes da Ocorrência */}
+      {viewOccurrence && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200" onClick={() => setViewOccurrence(null)}>
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl max-h-[90vh] overflow-y-auto p-6 animate-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-6 border-b border-gray-100 pb-4">
+              <h3 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                <FileText className="w-6 h-6 text-blue-600" /> Detalhes da Ocorrência
+              </h3>
+              <button onClick={() => setViewOccurrence(null)} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                <X className="w-6 h-6 text-gray-500" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              {/* Informações Principais */}
+              <div className="space-y-4">
+                <h4 className="font-semibold text-gray-700 border-b border-gray-100 pb-2">Informações Principais</h4>
+                <div className="space-y-4">
+                    <div className="flex justify-between items-start gap-4">
+                        <div className="flex-1">
+                            <p className="text-sm text-gray-500">Título</p>
+                            <p className="font-bold text-gray-900">{viewOccurrence.title}</p>
+                        </div>
+                        <div className="flex items-start gap-6 text-right">
+                            <div>
+                                <p className="text-sm text-gray-500">Status</p>
+                                <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                                  viewOccurrence.status === 'Concluída' ? 'bg-green-100 text-green-800' : 
+                                  viewOccurrence.status === 'Em Andamento' ? 'bg-yellow-100 text-yellow-800' : 
+                                  viewOccurrence.status === 'Parada' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-800'
+                                }`}>
+                                  {viewOccurrence.status || 'Pendente'}
+                                </span>
+                            </div>
+                            <div>
+                                <p className="text-sm text-gray-500">Data Registro</p>
+                                <p className="font-medium text-gray-900">{new Date(viewOccurrence.created_at).toLocaleString('pt-BR')}</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div>
+                        <p className="text-sm text-gray-500">Descrição</p>
+                        <p className="text-gray-700 whitespace-pre-wrap text-sm">{viewOccurrence.description}</p>
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-2 border-t border-gray-50">
+                        {viewOccurrence.creator?.photo_url ? (
+                            <img src={viewOccurrence.creator.photo_url} alt="" className="w-8 h-8 rounded-full object-cover border border-gray-200" />
+                        ) : (
+                            <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center border border-gray-200">
+                                <User className="w-4 h-4 text-gray-500" />
+                            </div>
+                        )}
+                        <div>
+                            <p className="text-xs text-gray-500">Registrado por</p>
+                            <p className="text-sm font-medium">{viewOccurrence.creator?.name || 'Desconhecido'}</p>
+                        </div>
+                    </div>
+                </div>
+              </div>
+
+              {/* Veículo (se houver) */}
+              {viewOccurrence.vehicle && (
+              <div className="space-y-4">
+                <h4 className="font-semibold text-gray-700 border-b border-gray-100 pb-2">Veículo Envolvido</h4>
+                <div className="bg-gray-50 p-4 rounded-lg">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-2xl font-bold text-gray-900">{viewOccurrence.vehicle.plate}</span>
+                    <span className="text-xs font-medium px-2 py-1 bg-white rounded border border-gray-200 text-gray-600">
+                      {viewOccurrence.vehicle.color}
+                    </span>
+                  </div>
+                  <p className="text-sm text-gray-600">{viewOccurrence.vehicle.model}</p>
+                  {viewOccurrence.vehicle.company && (
+                    <p className="text-sm text-gray-500 mt-1 flex items-center gap-1">
+                      <Building2 className="w-3 h-3" /> {viewOccurrence.vehicle.company}
+                    </p>
+                  )}
+                </div>
+              </div>
+              )}
+            </div>
+
+            {/* Ação Realizada e Conclusão */}
+            {viewOccurrence.action_taken && (
+              <div className="mt-6 bg-green-50 p-4 rounded-lg border border-green-100">
+                <h4 className="text-sm font-bold text-green-800 mb-1">Ação Realizada / Conclusão</h4>
+                <p className="text-sm text-green-700 whitespace-pre-wrap">{viewOccurrence.action_taken}</p>
+                {viewOccurrence.completed_at && (
+                    <p className="text-xs text-green-600 mt-2 text-right">
+                        Concluído em: {new Date(viewOccurrence.completed_at).toLocaleString('pt-BR')}
+                    </p>
+                )}
+              </div>
+            )}
+
+            {/* Fotos */}
+            <div className="mt-8">
+              <h4 className="font-semibold text-gray-700 border-b border-gray-100 pb-2 mb-4">Registro Fotográfico</h4>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                {viewOccurrence.photos?.map((photo: string, idx: number) => (
+                  <div key={`evidence-${idx}`} className="space-y-1">
+                    <p className="text-xs text-gray-500">Evidência {idx + 1}</p>
+                    <img 
+                      src={photo} 
+                      alt="Evidência" 
+                      className="w-full h-32 object-cover rounded-lg border border-gray-200 cursor-pointer hover:opacity-90"
+                      onClick={() => setZoomedImage(photo)}
+                    />
+                  </div>
+                ))}
+                {viewOccurrence.completion_photos?.map((photo: string, idx: number) => (
+                  <div key={`completion-${idx}`} className="space-y-1">
+                    <p className="text-xs text-gray-500">Conclusão {idx + 1}</p>
+                    <img 
+                      src={photo} 
+                      alt="Conclusão" 
+                      className="w-full h-32 object-cover rounded-lg border border-gray-200 cursor-pointer hover:opacity-90"
+                      onClick={() => setZoomedImage(photo)}
+                    />
+                  </div>
+                ))}
+                {viewOccurrence.signature_url && (
+                  <div className="space-y-1">
+                    <p className="text-xs text-gray-500">Assinatura</p>
+                    <div className="w-full h-32 bg-white border border-gray-200 rounded-lg flex items-center justify-center p-2 cursor-pointer hover:border-blue-300" onClick={() => setZoomedImage(viewOccurrence.signature_url)}>
+                        <img 
+                        src={viewOccurrence.signature_url} 
+                        alt="Assinatura" 
+                        className="max-w-full max-h-full object-contain"
+                        />
+                    </div>
+                    {viewOccurrence.signature_by && <p className="text-xs text-center text-gray-600">{viewOccurrence.signature_by}</p>}
+                  </div>
+                )}
+              </div>
+            </div>
+
+          </div>
         </div>
       )}
     </div>

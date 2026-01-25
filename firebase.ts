@@ -3,21 +3,28 @@ import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 import { getAuth } from "firebase/auth";
 
-const firebaseConfig = {
-  apiKey: "AIzaSyADCFbfdeU9y5Di1QfNdnAUtTa6ssNinoU",
-  authDomain: "cc-contrutora.firebaseapp.com",
-  databaseURL: "https://cc-contrutora-default-rtdb.firebaseio.com",
-  projectId: "cc-contrutora",
-  storageBucket: "cc-contrutora.firebasestorage.app",
-  messagingSenderId: "147600323206",
-  appId: "1:147600323206:web:92562d36d924f1c3341707"
+export const firebaseConfig = {
+  apiKey: "AIzaSyBmqSn3ZzGS2Rc4MIaL4Blg4XJ4hgCplmE",
+  authDomain: "nucleo-c2ecb.firebaseapp.com",
+  databaseURL: "https://nucleo-c2ecb-default-rtdb.firebaseio.com",
+  projectId: "nucleo-c2ecb",
+  storageBucket: "nucleo-c2ecb.firebasestorage.app",
+  messagingSenderId: "589108994631",
+  appId: "1:589108994631:web:197e97a41737e5bc568762"
 };
+
+// DEBUG: Verificar qual configuração está sendo carregada
+console.log("🔥 Firebase Config Carregada. ProjectId:", firebaseConfig.projectId);
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app);
 export const storage = getStorage(app);
 export const auth = getAuth(app);
+
+if (import.meta.env.DEV) {
+  console.log("Rodando em ambiente local (Desenvolvimento)");
+}
 
 // Interfaces mantidas para compatibilidade
 export interface Driver {

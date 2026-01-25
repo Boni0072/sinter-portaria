@@ -1,20 +1,6 @@
 import { useState, useEffect } from 'react';
-import { db, UserProfile, firebaseConfig } from './firebase';
-import { 
-  collection, 
-  getDocs, 
-  updateDoc, 
-  doc, 
-  query, 
-  orderBy, 
-  setDoc, 
-  where, 
-  limit, 
-  onSnapshot, 
-  QueryDocumentSnapshot, 
-  getDoc, 
-  deleteDoc 
-} from 'firebase/firestore';
+import { auth, UserProfile, firebaseConfig } from './firebase';
+import { getDatabase, ref, get, set, update, remove, onValue, query, orderByChild, equalTo } from 'firebase/database';
 import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { useAuth } from '../contexts/AuthContext';
@@ -63,6 +49,7 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingUser, setEditingUser] = useState<UserProfile | null>(null);
 
+  const database = getDatabase(auth.app);
   const activeTenantId = propTenantId || userProfile?.tenantId;
 
   useEffect(() => {
@@ -79,65 +66,45 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
     if (limitCount === ITEMS_PER_PAGE) setLoading(true);
     else setLoadingMore(true);
 
-    let q;
-    const baseConstraints = [orderBy('created_at', 'desc'), limit(limitCount)];
+    const profilesRef = ref(database, 'profiles');
+    // Nota: Filtragem complexa no RTDB é feita melhor no cliente para listas pequenas/médias
+    // ou requer estrutura de dados desnormalizada. Aqui faremos filtro no cliente.
+    
+    const unsubscribe = onValue(profilesRef, (snapshot) => {
+      const allUsers: UserProfile[] = [];
+      if (snapshot.exists()) {
+        snapshot.forEach((child) => {
+          allUsers.push({ id: child.key!, ...child.val() });
+        });
+      }
 
-    if (activeTenantId === 'all') {
-        const tenantIds = tenants.map(t => t.id).slice(0, 10);
-        if (tenantIds.length === 0) {
-            setUsers([]);
-            setLoading(false);
-            setLoadingMore(false);
-            return;
-        }
-        q = query(
-            collection(db, 'profiles'),
-            where('allowedTenants', 'array-contains-any', tenantIds),
-            ...baseConstraints
-        );
-    } else {
-        const currentTenant = tenants.find(t => t.id === activeTenantId);
-        let targetIds = [activeTenantId];
-        if (currentTenant?.type === 'matriz') {
-            const childIds = tenants.filter(t => t.parentId === activeTenantId).map(t => t.id);
-            targetIds = [...targetIds, ...childIds];
-        }
-        targetIds = targetIds.slice(0, 10);
-
-        q = query(
-            collection(db, 'profiles'),
-            where('allowedTenants', targetIds.length > 1 ? 'array-contains-any' : 'array-contains', targetIds.length > 1 ? targetIds : targetIds[0]),
-            ...baseConstraints
-        );
-    }
-
-    const unsubscribe = onSnapshot(q, (querySnapshot) => {
-        const loadedUsers = querySnapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data()
-        })) as UserProfile[];
-        
-        setUsers(loadedUsers);
-        setHasMore(querySnapshot.docs.length >= limitCount);
-        setLoading(false);
-        setLoadingMore(false);
-    }, (err) => {
-        console.error('Erro ao carregar usuários:', err);
-        if (err.code === 'failed-precondition' || err.message?.includes('index')) {
-          const message = err.message || '';
-          const match = message.match(/https:\/\/console\.firebase\.google\.com[^\s]*/);
-          const link = match ? match[0] : null;
-          
-          if (link) {
-            setError(<span>Configuração necessária: <a href={link} target="_blank" rel="noopener noreferrer" className="underline font-bold text-blue-700">Clique aqui para criar o índice</a>.</span>);
-          } else {
-            setError('Configuração necessária: É preciso criar um índice no Firebase. Verifique o link no console do navegador (F12).');
+      // Filtragem
+      let filtered = allUsers;
+      
+      if (userProfile?.role === 'admin' && activeTenantId === 'all') {
+          // Admin em "Todas as Empresas" vê todos os usuários, sem filtro.
+      } else if (activeTenantId !== 'all') {
+          // Identifica IDs relevantes (Matriz + Filiais)
+          const currentTenant = tenants.find(t => t.id === activeTenantId);
+          let targetIds = [activeTenantId];
+          if (currentTenant?.type === 'matriz') {
+              const childIds = tenants.filter(t => t.parentId === activeTenantId).map(t => t.id);
+              targetIds = [...targetIds, ...childIds];
           }
-        } else {
-          setError('Não foi possível carregar os usuários.');
-        }
-        setLoading(false);
-        setLoadingMore(false);
+          filtered = allUsers.filter(u => ((u as any).allowedTenants || ((u as any).tenantId ? [(u as any).tenantId] : [])).some((id: string) => targetIds.includes(id)));
+      } else {
+          // Se 'all' para não-admin, mostra usuários das empresas visíveis
+          const visibleTenantIds = tenants.map(t => t.id);
+          filtered = allUsers.filter(u => ((u as any).allowedTenants || ((u as any).tenantId ? [(u as any).tenantId] : [])).some((id: string) => visibleTenantIds.includes(id)));
+      }
+
+      // Ordenação e Limite
+      filtered.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      
+      setUsers(filtered.slice(0, limitCount));
+      setHasMore(filtered.length > limitCount);
+      setLoading(false);
+      setLoadingMore(false);
     });
 
     return () => unsubscribe();
@@ -151,35 +118,23 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
         
         // Se o usuário for admin, busca todas as empresas.
         if (userProfile.role === 'admin') {
-           const snapshot = await getDocs(collection(db, 'tenants'));
-           list = snapshot.docs.map(doc => ({ 
-             id: doc.id, 
-             name: doc.data().name,
-             type: doc.data().type,
-             parentId: doc.data().parentId
-           }));
+           const snapshot = await get(ref(database, 'tenants'));
+           if (snapshot.exists()) {
+             snapshot.forEach(child => {
+               list.push({ id: child.key!, ...child.val() });
+             });
+           }
         } else {
-           // Lógica antiga para outros usuários
-           // @ts-ignore
-           const allowed = userProfile?.allowedTenants;
-           if (allowed && Array.isArray(allowed) && allowed.length > 0) {
-              const promises = allowed.map(id => getDoc(doc(db, 'tenants', id)));
-              const docs = await Promise.all(promises);
-              list = docs.filter(d => d.exists()).map(doc => ({
-                id: doc.id,
-                name: doc.data().name,
-                type: doc.data().type,
-                parentId: doc.data().parentId
-              }));
-           } else {
-              const q = query(collection(db, 'tenants'), where('created_by', '==', user.uid));
-              const snapshot = await getDocs(q);
-              list = snapshot.docs.map(doc => ({ 
-                id: doc.id, 
-                name: doc.data().name,
-                type: doc.data().type,
-                parentId: doc.data().parentId
-              }));
+           // Para usuários comuns, busca apenas as permitidas (simplificado: busca todas e filtra)
+           // Em produção com muitos dados, seria ideal ter um índice ou estrutura 'user_tenants'
+           const snapshot = await get(ref(database, 'tenants'));
+           if (snapshot.exists()) {
+             snapshot.forEach(child => {
+               // @ts-ignore
+               if (userProfile.allowedTenants?.includes(child.key) || child.val().owner_id === user.uid) {
+                 list.push({ id: child.key!, ...child.val() });
+               }
+             });
            }
         }
 
@@ -227,6 +182,10 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
   const handleEdit = (user: UserProfile) => {
     setEditingUser(user);
     setNewRole(user.role);
+    setNewName((user as any).name || '');
+    setNewLogin((user as any).login || '');
+    setNewEmail(user.email || '');
+    setNewPassword((user as any).password || '');
     // @ts-ignore
     setSelectedTenants(user.allowedTenants || (user.tenantId ? [user.tenantId] : []));
     // @ts-ignore
@@ -237,13 +196,27 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
   const handleSaveEdit = async () => {
     if (!editingUser) return;
     try {
-      await updateDoc(doc(db, 'profiles', editingUser.id), { 
+      await update(ref(database, `profiles/${editingUser.id}`), { 
+        name: newName,
+        login: newLogin,
+        email: newEmail,
+        password: newPassword,
         role: newRole,
         allowedTenants: selectedTenants,
         allowedPages: selectedPages
       });
 
       setUsers(users.map(u => u.id === editingUser.id ? { ...u, role: newRole as any, allowedTenants: selectedTenants, allowedPages: selectedPages } : u));
+      setUsers(users.map(u => u.id === editingUser.id ? { 
+        ...u, 
+        name: newName,
+        login: newLogin,
+        email: newEmail,
+        password: newPassword,
+        role: newRole as any, 
+        allowedTenants: selectedTenants, 
+        allowedPages: selectedPages 
+      } : u));
       setShowEditModal(false);
       setEditingUser(null);
     } catch (err) {
@@ -261,8 +234,11 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
     if (!window.confirm('Tem certeza que deseja excluir este usuário? Esta ação removerá o acesso do usuário ao sistema.')) return;
 
     try {
-      await deleteDoc(doc(db, 'profiles', userId));
-      setUsers(prev => prev.filter(u => u.id !== userId));
+      // ATENÇÃO: Isso remove apenas o perfil do banco de dados (Realtime Database).
+      // O login (Auth) continua existindo no Firebase por segurança. Para excluir totalmente e liberar o e-mail,
+      // é necessário excluir o usuário manualmente pelo Console do Firebase > Authentication.
+      await remove(ref(database, `profiles/${userId}`));
+      // setUsers atualizado via listener onValue
     } catch (err) {
       console.error('Erro ao excluir usuário:', err);
       alert('Erro ao excluir usuário.');
@@ -300,10 +276,11 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
       const userCredential = await createUserWithEmailAndPassword(secondaryAuth, newEmail, newPassword);
       
       // Cria o perfil no Firestore com a permissão selecionada
-      await setDoc(doc(db, 'profiles', userCredential.user.uid), {
+      await set(ref(database, `profiles/${userCredential.user.uid}`), {
         name: newName,
         login: newLogin,
         email: newEmail,
+        password: newPassword,
         tenantId: tenantsToSave[0], // Define a primeira como principal para compatibilidade
         allowedTenants: tenantsToSave,
         allowedPages: selectedPages,
@@ -313,6 +290,21 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
 
       // Limpeza: desloga da instância secundária (NÃO deleta o app para evitar erros de concorrência)
       await signOut(secondaryAuth);
+
+      // Verifica se o usuário criado é visível na lista atual
+      const isVisible = tenantsToSave.some(id => {
+        if (activeTenantId === 'all') return true;
+        if (id === activeTenantId) return true;
+        const activeTenant = tenants.find(t => t.id === activeTenantId);
+        if (activeTenant?.type === 'matriz') {
+           return tenants.some(t => t.id === id && t.parentId === activeTenantId);
+        }
+        return false;
+      });
+
+      if (!isVisible) {
+        alert("Usuário criado com sucesso!\n\nNOTA: O usuário não aparece na lista agora porque você está visualizando uma empresa diferente da que foi vinculada a ele. Altere a empresa no topo da tela para vê-lo.");
+      }
 
       setNewName('');
       setNewLogin('');
@@ -329,6 +321,7 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
       let msg = 'Erro ao cadastrar usuário.';
       if (err.code === 'auth/email-already-in-use') {
         msg = 'Este e-mail já está cadastrado no sistema. Tente outro.';
+        msg = 'Este e-mail já existe na Autenticação do Firebase (provavelmente de um usuário excluído da lista mas não do Auth). Exclua-o no Console do Firebase ou use outro e-mail.';
       } else if (err.code === 'auth/weak-password') {
         msg = 'A senha é muito fraca. Digite pelo menos 6 caracteres.';
       } else if (err.code === 'auth/invalid-email') {
@@ -676,8 +669,62 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-lg w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto">
             <h3 className="text-lg font-bold mb-4 text-gray-800">Editar Permissões: {editingUser.email}</h3>
+            <h3 className="text-lg font-bold mb-4 text-gray-800">Editar Usuário: {editingUser.email}</h3>
             
             <div className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Nome de Usuário</label>
+                  <input
+                    type="text"
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Login</label>
+                  <input
+                    type="text"
+                    value={newLogin}
+                    onChange={(e) => setNewLogin(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                  <input
+                    type="email"
+                    value={newEmail}
+                    onChange={(e) => setNewEmail(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Nota: Alterar aqui não muda o login de acesso.</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Senha</label>
+                  <div className="relative">
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600"
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">Apenas registro visual.</p>
+                </div>
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Perfil de Acesso</label>
                 <select

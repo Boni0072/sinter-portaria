@@ -22,3 +22,7 @@ dist-ssr
 *.sw?
 .env
 nul
+
+# Ignorar chaves de conta de serviço do Firebase
+*-firebase-adminsdk-*.json
+firebase-credentials.json

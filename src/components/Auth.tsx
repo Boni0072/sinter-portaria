@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { db } from './firebase';
+import { doc, setDoc } from 'firebase/firestore';
 
 export default function Auth() {
   const [isLogin, setIsLogin] = useState(true);
@@ -18,7 +20,26 @@ export default function Auth() {
       if (isLogin) {
         await signIn(email, password);
       } else {
-        await signUp(email, password);
+        const res = await signUp(email, password);
+        
+        // Cria o perfil e a empresa no Firestore imediatamente após o cadastro
+        if (res && res.user) {
+          await setDoc(doc(db, 'profiles', res.user.uid), {
+            email: res.user.email,
+            tenantId: res.user.uid,
+            role: 'admin',
+            created_at: new Date().toISOString()
+          });
+
+          await setDoc(doc(db, 'tenants', res.user.uid), {
+            name: 'Minha Empresa',
+            type: 'matriz',
+            created_at: new Date().toISOString(),
+            owner_id: res.user.uid,
+            email: res.user.email,
+            created_by: res.user.uid // Adicionado para consistência
+          });
+        }
       }
     } catch (err: any) {
       console.error("Erro de autenticação:", err);
@@ -33,6 +54,8 @@ export default function Auth() {
         msg = 'Este email já está cadastrado.';
       } else if (err.code === 'auth/weak-password') {
         msg = 'A senha deve ter pelo menos 6 caracteres.';
+      } else if (err.code === 'auth/network-request-failed') {
+        msg = 'Erro de conexão. Verifique sua internet ou firewall.';
       } else if (err.code === 'auth/too-many-requests') {
         msg = 'Muitas tentativas falhas. Tente novamente mais tarde.';
       }
@@ -111,7 +134,7 @@ export default function Auth() {
             className="text-blue-600 hover:text-blue-700 text-sm font-medium"
           >
             {isLogin
-              ? ''
+              ? 'Não tem conta? Cadastre-se'
               : 'Já tem conta? Entre'}
           </button>
         </div>

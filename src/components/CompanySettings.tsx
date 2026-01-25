@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
-import { db } from './firebase';
-import { doc, setDoc, onSnapshot, collection, addDoc, query, where, deleteDoc, getDoc, getDocs, documentId } from 'firebase/firestore';
+import { auth, db } from './firebase';
+import { getDatabase, ref, push, set, remove, update, onValue, query, orderByChild, equalTo, get } from 'firebase/database';
 import { useAuth } from '../contexts/AuthContext';
-import { Building2, Wifi, Plus, Store, Trash2, Link as LinkIcon, Pencil } from 'lucide-react';
+import { Building2, Plus, Store, Trash2, Link as LinkIcon, Pencil } from 'lucide-react';
 
 interface Filial {
   id: string;
@@ -23,6 +23,7 @@ export default function CompanySettings({ tenantId: propTenantId }: Props) {
   const { user, userProfile } = useAuth();
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
+  const database = getDatabase(auth.app);
   
   const [allCompanies, setAllCompanies] = useState<Filial[]>([]); // NEW state for all companies
   const [showLinkFilialModal, setShowLinkFilialModal] = useState(false);
@@ -41,29 +42,28 @@ export default function CompanySettings({ tenantId: propTenantId }: Props) {
     parkingSpots: ''
   });
 
-  const activeTenantId = propTenantId || userProfile?.tenantId || user?.uid;
-
   useEffect(() => {
     if (!user?.uid) return;
 
     let q;
     // @ts-ignore
-    const allowed = userProfile?.allowedTenants;
+    // Nota: Realtime DB não suporta query 'IN' nativa facilmente, então buscamos por owner_id
+    // Para suporte a allowedTenants complexo, seria necessário buscar individualmente ou filtrar no cliente.
+    // Aqui focamos na estrutura principal por owner_id.
+    
+    const tenantsRef = ref(database, 'tenants');
+    q = query(tenantsRef, orderByChild('owner_id'), equalTo(user.uid));
 
-    if (allowed && Array.isArray(allowed) && allowed.length > 0) {
-       // Busca empresas permitidas (limite de 10 para query 'in')
-       q = query(collection(db, 'tenants'), where(documentId(), 'in', allowed.slice(0, 10)));
-    } else {
-       // Busca empresas criadas pelo usuário
-       q = query(collection(db, 'tenants'), where('created_by', '==', user.uid));
-    }
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
+    const unsubscribe = onValue(q, (snapshot) => {
       const companiesList: Filial[] = [];
-      snapshot.forEach((doc) => {
-        const data = doc.data();
+      if (!snapshot.exists()) {
+        setAllCompanies([]);
+        return;
+      }
+      snapshot.forEach((child) => {
+        const data = child.val();
         companiesList.push({
-          id: doc.id,
+          id: child.key!,
           name: data.name,
           cnpj: data.cnpj,
           phone: data.phone,
@@ -85,17 +85,21 @@ export default function CompanySettings({ tenantId: propTenantId }: Props) {
       return;
     }
     setLoading(true);
+    
+    const spots = parseInt(createData.parkingSpots);
     try {
-      await addDoc(collection(db, 'tenants'), {
+      const newCompanyRef = push(ref(database, 'tenants'));
+      await set(newCompanyRef, {
         name: createData.name,
         cnpj: createData.cnpj || '',
         phone: createData.phone || '',
         address: createData.address || '',
-        parkingSpots: createData.parkingSpots ? parseInt(createData.parkingSpots) : 0,
+        parkingSpots: isNaN(spots) ? 0 : spots,
         type: createData.type,
         parentId: createData.type === 'filial' && createData.parentId ? createData.parentId : null,
         created_at: new Date().toISOString(),
-        created_by: user?.uid
+        created_by: user?.uid,
+        owner_id: user?.uid // Adicionado para garantir que apareça na lista
       });
       setShowCreateModal(false);
       setCreateData({ name: '', cnpj: '', phone: '', address: '', type: 'matriz', parentId: '', parkingSpots: '' });
@@ -120,16 +124,17 @@ export default function CompanySettings({ tenantId: propTenantId }: Props) {
       return;
     }
     setLoading(true);
+    const spots = parseInt(String(editData.parkingSpots));
     try {
-      await setDoc(doc(db, 'tenants', editData.id), {
+      await update(ref(database, `tenants/${editData.id}`), {
         name: editData.name,
         cnpj: editData.cnpj || '',
         phone: editData.phone || '',
         address: editData.address || '',
-        parkingSpots: editData.parkingSpots || 0,
+        parkingSpots: isNaN(spots) ? 0 : spots,
         updated_at: new Date().toISOString(),
         updated_by: user?.uid
-      }, { merge: true });
+      });
       
       setMessage({ type: 'success', text: 'Empresa atualizada com sucesso!' });
       setShowEditModal(false);
@@ -146,7 +151,7 @@ export default function CompanySettings({ tenantId: propTenantId }: Props) {
   const handleDeleteFilial = async (id: string) => {
     if (window.confirm('Tem certeza que deseja excluir esta filial?')) {
       try {
-        await deleteDoc(doc(db, 'tenants', id));
+        await remove(ref(database, `tenants/${id}`));
       } catch (error) {
         console.error("Erro ao excluir filial:", error);
         alert("Erro ao excluir filial.");
@@ -158,12 +163,12 @@ export default function CompanySettings({ tenantId: propTenantId }: Props) {
     if (!selectedFilialForLink || !selectedMatrixId) return;
     setLoading(true);
     try {
-      await setDoc(doc(db, 'tenants', selectedFilialForLink), {
+      await update(ref(database, `tenants/${selectedFilialForLink}`), {
         parentId: selectedMatrixId,
         type: 'filial',
         updated_at: new Date().toISOString(),
         updated_by: user?.uid
-      }, { merge: true });
+      });
       
       setMessage({ type: 'success', text: 'Filial vinculada à matriz com sucesso!' });
       setShowLinkFilialModal(false);
@@ -178,41 +183,15 @@ export default function CompanySettings({ tenantId: propTenantId }: Props) {
     }
   };
 
-  const testConnection = async () => {
-    if (!activeTenantId) {
-      alert("Erro: ID do usuário não encontrado.");
-      return;
-    }
-    
-    try {
-      console.log(`[Debug] Testando escrita no documento 'tenants/${activeTenantId}'`);
-      const docRef = doc(db, 'tenants', activeTenantId);
-      
-      // Adiciona timeout de 5 segundos para evitar travamento
-      const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Tempo limite excedido (5s). Verifique sua internet.")), 5000));
-      
-      await Promise.race([
-        setDoc(docRef, { last_connection_test: new Date().toISOString() }, { merge: true }),
-        timeoutPromise
-      ]);
-      
-      console.log("[Debug] Escrita de teste concluída com sucesso.");
-      alert("✅ Conexão com o banco de dados funcionando!");
-    } catch (error: any) {
-      console.error("[Debug] Erro no teste de conexão:", error);
-      alert(`❌ Falha na conexão com o banco de dados. Erro: ${error.message}`);
-    }
-  };
-
   const handleUpdateCompanyType = async (companyId: string, newType: 'matriz' | 'filial') => {
     setLoading(true);
     try {
-      await setDoc(doc(db, 'tenants', companyId), {
+      await update(ref(database, `tenants/${companyId}`), {
         type: newType,
-        parentId: newType === 'matriz' ? null : undefined, // Clear parentId if becoming matriz
+        parentId: newType === 'matriz' ? null : null, // Clear parentId if becoming matriz
         updated_at: new Date().toISOString(),
         updated_by: user?.uid
-      }, { merge: true });
+      });
       setMessage({ type: 'success', text: `Tipo da empresa atualizado para ${newType} com sucesso!` });
     } catch (error: any) {
       console.error("Erro ao atualizar tipo da empresa:", error);
@@ -230,15 +209,15 @@ export default function CompanySettings({ tenantId: propTenantId }: Props) {
     setLoading(true);
     try {
       // Check if it's a matriz with linked filiais
-      const q = query(collection(db, 'tenants'), where('parentId', '==', companyId));
-      const querySnapshot = await getDocs(q);
-      if (!querySnapshot.empty) {
+      const q = query(ref(database, 'tenants'), orderByChild('parentId'), equalTo(companyId));
+      const querySnapshot = await get(q);
+      if (querySnapshot.exists()) {
         alert("Não é possível excluir esta empresa pois ela possui filiais vinculadas. Desvincule ou exclua as filiais primeiro.");
         setLoading(false);
         return;
       }
 
-      await deleteDoc(doc(db, 'tenants', companyId));
+      await remove(ref(database, `tenants/${companyId}`));
       setMessage({ type: 'success', text: `Empresa "${companyName}" excluída com sucesso!` });
     } catch (error: any) {
       console.error("Erro ao excluir empresa:", error);
@@ -255,11 +234,11 @@ export default function CompanySettings({ tenantId: propTenantId }: Props) {
     }
     setLoading(true);
     try {
-      await setDoc(doc(db, 'tenants', filialId), {
+      await update(ref(database, `tenants/${filialId}`), {
         parentId: null, // Remove parentId
         updated_at: new Date().toISOString(),
         updated_by: user?.uid
-      }, { merge: true });
+      });
       setMessage({ type: 'success', text: 'Filial desvinculada com sucesso!' });
     } catch (error: any) {
       console.error("Erro ao desvincular filial:", error);
@@ -280,16 +259,6 @@ export default function CompanySettings({ tenantId: propTenantId }: Props) {
           <h2 className="text-2xl font-bold text-gray-800">Minha Empresa</h2>
           <p className="text-gray-500">Gerencie os dados da sua organização</p>
         </div>
-      </div>
-
-      <div className="flex justify-end mb-4">
-        <button 
-          type="button" 
-          onClick={testConnection}
-          className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-2 px-3 py-1 bg-blue-50 rounded-lg border border-blue-100"
-        >
-          <Wifi className="w-4 h-4" /> Testar Conexão com Banco de Dados
-        </button>
       </div>
 
       {/* Seção de Gerenciamento de Empresas (Hierárquica) */}

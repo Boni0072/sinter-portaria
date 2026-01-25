@@ -1,0 +1,26 @@
+{
+  "rules": {
+    ".read": true,
+    ".write": true,
+    "tenants": {
+      ".indexOn": ["parentId", "owner_id", "name"],
+      "$tenantId": {
+        "entries": {
+          ".indexOn": ["entry_time"]
+        },
+        "occurrences": {
+          ".indexOn": ["created_at"]
+        },
+        "vehicles": {
+          ".indexOn": ["plate"]
+        }
+      }
+    },
+    "profiles": {
+      ".indexOn": ["email", "tenantId"]
+    },
+    "drivers": {
+      ".indexOn": ["name", "document"]
+    }
+  }
+}

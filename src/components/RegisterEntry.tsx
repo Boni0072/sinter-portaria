@@ -1,14 +1,15 @@
 import { useState, useEffect, useRef } from 'react';
-import { db, Driver, Vehicle } from './firebase';
-import { collection, addDoc, getDocs, query, where, orderBy, doc, setDoc, getDoc } from 'firebase/firestore';
+import { auth, Driver, Vehicle } from './firebase';
+import { getDatabase, ref, get, query as rtdbQuery, orderByChild, equalTo, push, set, update, onValue } from 'firebase/database';
 import { useAuth } from '../contexts/AuthContext';
 import { Save, Camera, Upload, User, Truck, Check, Maximize2, X, Building2, LogOut, ChevronDown, Search, Plus } from 'lucide-react';
 
 interface Props {
   onSuccess: () => void;
+  tenantId?: string;
 }
 
-export default function RegisterEntry({ onSuccess }: Props) {
+export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Props) {
   const { user, userProfile, signOut } = useAuth() as any;
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
@@ -38,6 +39,7 @@ export default function RegisterEntry({ onSuccess }: Props) {
   const [vehicleSearch, setVehicleSearch] = useState('');
   const [location, setLocation] = useState<{lat: number, lng: number} | null>(null);
 
+  const database = getDatabase(auth.app);
   const vehiclePhotoRef = useRef<HTMLInputElement>(null);
   const platePhotoRef = useRef<HTMLInputElement>(null);
 
@@ -57,11 +59,11 @@ export default function RegisterEntry({ onSuccess }: Props) {
       
       try {
         // Validação de segurança: Busca dados atualizados do usuário no Firebase
-        const userDocRef = doc(db, 'profiles', user.uid);
-        const userDocSnap = await getDoc(userDocRef);
+        const userRef = ref(database, `profiles/${user.uid}`);
+        const userSnap = await get(userRef);
         
-        if (userDocSnap.exists()) {
-          const userData = userDocSnap.data();
+        if (userSnap.exists()) {
+          const userData = userSnap.val();
           
           // Atualiza com dados frescos do banco
           if (userData.tenantId) defaultId = userData.tenantId;
@@ -87,36 +89,42 @@ export default function RegisterEntry({ onSuccess }: Props) {
         let list: {id: string, name: string}[] = [];
         let isRestricted = false;
 
-        // 1. Se o usuário tem permissões explícitas (sub-usuário/operador)
-        if (allowedTenants && Array.isArray(allowedTenants)) {
-          isRestricted = true;
-          if (allowedTenants.length > 0) {
-            const promises = allowedTenants.map((id: string) => getDoc(doc(db, 'tenants', id)));
-            const docs = await Promise.all(promises);
-            list = docs
-              .filter(d => d.exists())
-              .map(d => ({ id: d.id, name: d.data()?.name || 'Empresa sem nome' }));
-          }
-        } 
-        // 2. Se não tem permissões explícitas, tenta buscar pelo created_by (Dono/Admin)
-        else {
-          const q = query(collection(db, 'tenants'), where('created_by', '==', user.uid));
-          const snapshot = await getDocs(q);
-          if (!snapshot.empty) {
-            list = snapshot.docs.map(doc => ({
-              id: doc.id,
-              name: doc.data().name || 'Empresa sem nome'
-            }));
-          }
-          
-          // 3. Fallback: Apenas se não houver restrições explícitas
-          if (list.length === 0 && defaultId && !isRestricted) {
-             const docSnap = await getDoc(doc(db, 'tenants', defaultId));
-             if (docSnap.exists()) {
-               list.push({ id: docSnap.id, name: docSnap.data().name || 'Minha Empresa' });
+        // Busca todas as empresas do Realtime Database
+        const tenantsRef = ref(database, 'tenants');
+        
+        // Se for admin/dono, busca todas as empresas que ele é dono
+        if (!isRestricted && (!allowedTenants || allowedTenants.length === 0)) {
+             const q = rtdbQuery(tenantsRef, orderByChild('owner_id'), equalTo(user.uid));
+             const snapshot = await get(q);
+             if (snapshot.exists()) {
+               snapshot.forEach((child) => {
+                 list.push({ id: child.key!, name: child.val().name });
+               });
+             }
+             
+             // Fallback: Tenta buscar pelo ID padrão se a lista estiver vazia
+             if (list.length === 0 && defaultId) {
+                const tenantSnap = await get(ref(database, `tenants/${defaultId}`));
+                if (tenantSnap.exists()) {
+                   list.push({ id: defaultId, name: tenantSnap.val().name });
+                }
+             }
+        } else {
+             // Se tiver permissões explícitas, busca apenas as permitidas
+             // Nota: RTDB não tem "in" query, então buscamos uma a uma ou todas e filtramos
+             // Para eficiência em listas pequenas, buscamos individualmente
+             if (allowedTenants && Array.isArray(allowedTenants)) {
+                 // OTIMIZAÇÃO: Busca todas as empresas em paralelo (Promise.all) ao invés de uma por uma
+                 const promises = allowedTenants.map(tenantId => get(ref(database, `tenants/${tenantId}`)));
+                 const snapshots = await Promise.all(promises);
+                 
+                 snapshots.forEach((snap, index) => {
+                    if (snap.exists()) {
+                        list.push({ id: allowedTenants[index], name: snap.val().name });
+                    }
+                 });
              }
           }
-        }
 
         // Remove duplicatas
         list = list.filter((v, i, a) => a.findIndex(t => t.id === v.id) === i);
@@ -124,7 +132,9 @@ export default function RegisterEntry({ onSuccess }: Props) {
         setTenants(list);
         
         // Lógica de seleção da empresa inicial
-        if (list.some(t => t.id === defaultId)) {
+        if (propTenantId && propTenantId !== 'all' && list.some(t => t.id === propTenantId)) {
+          setCurrentTenantId(propTenantId);
+        } else if (list.some(t => t.id === defaultId)) {
           setCurrentTenantId(defaultId);
         } else if (list.length > 0) {
           setCurrentTenantId(list[0].id);
@@ -140,20 +150,25 @@ export default function RegisterEntry({ onSuccess }: Props) {
     };
     
     initTenants();
-  }, [user, userProfile]);
+  }, [user, userProfile, propTenantId]);
 
   const loadDrivers = async () => {
+    // Evita recarregar se já tiver motoristas na memória
+    if (drivers.length > 0) return;
     console.log("Iniciando loadDrivers...");
     try {
       // Busca todos os motoristas da coleção global 'drivers'
-      const q = query(collection(db, 'drivers'));
-      const snap = await getDocs(q);
-      console.log(`Consulta a 'drivers' retornou ${snap.docs.length} documentos.`);
+      const driversRef = ref(database, 'drivers');
+      const snapshot = await get(driversRef);
       
-      const allDrivers = snap.docs.map(doc => ({ 
-        id: doc.id, 
-        ...doc.data()
-      })) as Driver[];
+      const allDrivers: Driver[] = [];
+      if (snapshot.exists()) {
+        snapshot.forEach((child) => {
+          allDrivers.push({ id: child.key!, ...child.val() });
+        });
+      }
+      
+      console.log(`Consulta a 'drivers' retornou ${allDrivers.length} documentos.`);
 
       // Ordena os motoristas manualmente no cliente
       allDrivers.sort((a, b) => a.name.localeCompare(b.name));
@@ -165,34 +180,31 @@ export default function RegisterEntry({ onSuccess }: Props) {
     }
   };
 
-  const loadVehicles = async () => {
-    try {
-      if (!currentTenantId) return;
-      
-      // Busca todos os veículos da empresa (sem filtrar por motorista)
-      const q = query(
-        collection(db, 'tenants', currentTenantId, 'vehicles')
-      );
-      const snap = await getDocs(q);
-      const allVehicles = snap.docs.map(doc => ({ 
-        id: doc.id, 
-        ...doc.data() 
-      })) as Vehicle[];
+  useEffect(() => {
+    if (!currentTenantId) return;
+
+    // Busca todos os veículos da empresa no Realtime Database (Tempo Real)
+    const vehiclesRef = ref(database, `tenants/${currentTenantId}/vehicles`);
+    const unsubscribe = onValue(vehiclesRef, (snapshot) => {
+      const allVehicles: Vehicle[] = [];
+      if (snapshot.exists()) {
+        snapshot.forEach((child) => {
+          allVehicles.push({ id: child.key!, ...child.val() });
+        });
+      }
 
       allVehicles.sort((a, b) => (a.plate || '').localeCompare(b.plate || ''));
       setVehicles(allVehicles);
-    } catch (err) {
-      console.error('Erro ao carregar veículos:', err);
-    }
-  };
+    }, (error) => {
+      console.error('Erro ao carregar veículos:', error);
+    });
+
+    return () => unsubscribe();
+  }, [currentTenantId]);
 
   useEffect(() => {
     loadDrivers();
   }, []);
-
-  useEffect(() => {
-    if (currentTenantId) loadVehicles();
-  }, [currentTenantId]);
 
   // Obter geolocalização ao montar o componente
   useEffect(() => {
@@ -287,12 +299,17 @@ export default function RegisterEntry({ onSuccess }: Props) {
         throw new Error('Selecione uma empresa para registrar a entrada.');
       }
       
+      if (!selectedDriver) {
+        throw new Error('Por favor, selecione o motorista.');
+      }
+
       const tenantId = currentTenantId;
 
       // Garante que a "pasta" (documento) da empresa exista explicitamente no banco
-      await setDoc(doc(db, 'tenants', tenantId), {
+      // RTDB: Atualiza last_activity
+      await update(ref(database, `tenants/${tenantId}`), {
         last_activity: new Date().toISOString()
-      }, { merge: true });
+      });
 
       // Otimização: Conversão para Base64 e criação de veículo em paralelo
       const uploadsPromise = Promise.all([
@@ -309,8 +326,8 @@ export default function RegisterEntry({ onSuccess }: Props) {
           throw new Error('Motorista deve ser selecionado para cadastrar um novo veículo.');
         }
         // Gera o ID localmente na subcoleção do motorista
-        const newVehicleRef = doc(collection(db, 'tenants', tenantId, 'vehicles'));
-        vehicleId = newVehicleRef.id;
+        const newVehicleRef = push(ref(database, `tenants/${tenantId}/vehicles`));
+        vehicleId = newVehicleRef.key!;
 
         const vehicleData = {
           plate: newPlate.toUpperCase(),
@@ -324,7 +341,7 @@ export default function RegisterEntry({ onSuccess }: Props) {
         };
 
         // Aguarda salvamento real do veículo
-        vehicleSavePromises.push(setDoc(newVehicleRef, vehicleData));
+        vehicleSavePromises.push(set(newVehicleRef, vehicleData));
       }
 
       // Aguarda uploads e o início do salvamento do veículo
@@ -335,11 +352,11 @@ export default function RegisterEntry({ onSuccess }: Props) {
 
       // Atualiza o cadastro do veículo com as fotos recentes
       if (vehicleId) {
-          const vehicleRef = doc(db, 'tenants', tenantId, 'vehicles', vehicleId);
-          await setDoc(vehicleRef, {
+          const vehicleRef = ref(database, `tenants/${tenantId}/vehicles/${vehicleId}`);
+          await update(vehicleRef, {
               vehicle_photo_url: vehiclePhotoUrl,
               plate_photo_url: platePhotoUrl
-          }, { merge: true });
+          });
       }
 
       // Otimização: Salvar dados desnormalizados para leitura rápida na lista
@@ -349,7 +366,7 @@ export default function RegisterEntry({ onSuccess }: Props) {
         : vehicles.find(v => v.id === selectedVehicle);
 
       // Salvar Entrada com timeout de segurança
-      const newEntryRef = doc(collection(db, 'tenants', tenantId, 'entries'));
+      const newEntryRef = push(ref(database, `tenants/${tenantId}/entries`));
       const entryData = {
         vehicle_id: vehicleId,
         driver_id: selectedDriver,
@@ -373,7 +390,7 @@ export default function RegisterEntry({ onSuccess }: Props) {
       };
 
       // Aguarda salvamento real da entrada
-      await setDoc(newEntryRef, entryData);
+      await set(newEntryRef, entryData);
 
       setSelectedDriver('');
       setSelectedVehicle('');
@@ -447,7 +464,7 @@ export default function RegisterEntry({ onSuccess }: Props) {
 
       <form onSubmit={handleSubmit} className="space-y-8">
         {/* Seletor de Empresa (Aparece apenas se houver mais de uma) */}
-        {tenants.length > 1 && (
+        {tenants.length > 0 && (
           <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
             <div className="flex items-center gap-3 mb-4">
               <div className="p-2 bg-blue-50 rounded-lg">
@@ -619,7 +636,7 @@ export default function RegisterEntry({ onSuccess }: Props) {
               </div>
 
               <div className="space-y-6">
-                <div className={!selectedDriver ? 'opacity-50 pointer-events-none grayscale' : 'transition-all duration-300'}>
+                <div className="transition-all duration-300">
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Selecione o Veículo
                   </label>
@@ -653,6 +670,7 @@ export default function RegisterEntry({ onSuccess }: Props) {
                            )}
                            <span className={`truncate ${selectedVehicle ? "text-gray-900 font-medium" : "text-gray-500"}`}>
                               {selectedVehicle === 'new' ? 'Novo Veículo' : (selectedVehicleData ? `${selectedVehicleData.plate} - ${selectedVehicleData.brand} ${selectedVehicleData.model}` : (selectedDriver ? "Selecione o veículo..." : "Aguardando motorista..."))}
+                              {selectedVehicle === 'new' ? 'Novo Veículo' : (selectedVehicleData ? `${selectedVehicleData.plate} - ${selectedVehicleData.brand} ${selectedVehicleData.model}` : "Selecione o veículo...")}
                            </span>
                        </div>
                        <ChevronDown className={`w-5 h-5 text-gray-400 transition-transform shrink-0 ${isVehicleListOpen ? 'rotate-180' : ''}`} />

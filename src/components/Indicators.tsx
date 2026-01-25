@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { db } from './firebase';
-import { collection, getDocs, query, where, orderBy, limit, doc, getDoc, onSnapshot } from 'firebase/firestore';
+import { auth } from './firebase';
+import { getDatabase, ref, get, query, orderByChild, equalTo, limitToLast, onValue, startAt, endAt } from 'firebase/database';
 import { useAuth } from '../contexts/AuthContext';
 import { BarChart3, Clock, Truck, Users, ArrowDownRight, Activity, Calendar, Building2, AlertTriangle, Timer, Maximize2, X, Download, FileText, MapPin, Car } from 'lucide-react';
 
@@ -75,6 +75,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [addresses, setAddresses] = useState<Record<string, string>>({});
   const [showOccupancyModal, setShowOccupancyModal] = useState(false);
+  const database = getDatabase(auth.app);
 
   const activeTenantId = selectedTenantId || propTenantId || (userProfile as any)?.tenantId || user?.uid;
   
@@ -96,53 +97,76 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
         let list: {id: string, name: string, address?: string}[] = [];
 
         if (allowedTenants && Array.isArray(allowedTenants) && allowedTenants.length > 0) {
-          const promises = allowedTenants.map(id => getDoc(doc(db, 'tenants', id)));
-          const docs = await Promise.all(promises);
-          list = docs
-            .filter(d => d.exists())
-            .map(d => ({ 
-              id: d.id, 
-              name: d.data()?.name || 'Empresa sem nome',
-              address: d.data()?.address,
-              parkingSpots: d.data()?.parkingSpots
-            }));
+          const promises = allowedTenants.map(id => get(ref(database, `tenants/${id}`)));
+          const snapshots = await Promise.all(promises);
+          
+          snapshots.forEach((snap, index) => {
+            if (snap.exists()) {
+              list.push({
+                id: allowedTenants[index],
+                name: snap.val().name || 'Empresa sem nome',
+                address: snap.val().address,
+                parkingSpots: snap.val().parkingSpots
+              });
+            }
+          });
+        } else if (userProfile?.role === 'admin') {
+           // Se for admin, busca todas as empresas que ele é dono
+           const q = query(ref(database, 'tenants'), orderByChild('owner_id'), equalTo(user.uid));
+           const snapshot = await get(q);
+           if (snapshot.exists()) {
+             snapshot.forEach(child => {
+               list.push({
+                 id: child.key!,
+                 name: child.val().name || 'Empresa sem nome',
+                 address: child.val().address,
+                 parkingSpots: child.val().parkingSpots
+               });
+             });
+           }
         } else {
           // Lógica hierárquica: Matriz + Filiais (igual ao Dashboard)
           const myTenantId = (userProfile as any)?.tenantId || user.uid;
           
           // 1. Busca a própria empresa (Matriz ou Filial)
-          const myTenantSnap = await getDoc(doc(db, 'tenants', myTenantId));
+          const myTenantSnap = await get(ref(database, `tenants/${myTenantId}`));
           if (myTenantSnap.exists()) {
              list.push({
-               id: myTenantSnap.id,
-               name: myTenantSnap.data().name || 'Minha Empresa',
-               address: myTenantSnap.data().address,
-               parkingSpots: myTenantSnap.data().parkingSpots
+               id: myTenantSnap.key!,
+               name: myTenantSnap.val().name || 'Minha Empresa',
+               address: myTenantSnap.val().address,
+               parkingSpots: myTenantSnap.val().parkingSpots
              });
 
              // 2. Busca filiais vinculadas
-             const q = query(collection(db, 'tenants'), where('parentId', '==', myTenantId));
-             const snapshot = await getDocs(q);
-             snapshot.forEach(doc => {
-               list.push({
-                 id: doc.id,
-                 name: doc.data().name || 'Filial',
-                 address: doc.data().address,
-                 parkingSpots: doc.data().parkingSpots
+             const q = query(ref(database, 'tenants'), orderByChild('parentId'), equalTo(myTenantId));
+             const snapshot = await get(q);
+             if (snapshot.exists()) {
+               snapshot.forEach(child => {
+                 list.push({
+                   id: child.key!,
+                   name: child.val().name || 'Filial',
+                   address: child.val().address,
+                   parkingSpots: child.val().parkingSpots
+                 });
                });
-             });
+             }
           }
           
           // Fallback: Se não achou nada, tenta por created_by (legado)
           if (list.length === 0) {
-             const q = query(collection(db, 'tenants'), where('created_by', '==', user.uid));
-             const snapshot = await getDocs(q);
-             list = snapshot.docs.map(doc => ({
-               id: doc.id,
-               name: doc.data().name || 'Empresa sem nome',
-               address: doc.data().address,
-               parkingSpots: doc.data().parkingSpots
-             }));
+             const q = query(ref(database, 'tenants'), orderByChild('owner_id'), equalTo(user.uid));
+             const snapshot = await get(q);
+             if (snapshot.exists()) {
+               snapshot.forEach(child => {
+                 list.push({
+                   id: child.key!,
+                   name: child.val().name || 'Empresa sem nome',
+                   address: child.val().address,
+                   parkingSpots: child.val().parkingSpots
+                 });
+               });
+             }
           }
         }
 
@@ -150,7 +174,9 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
         
         setTenants(list);
 
-        if (list.length > 1) {
+        if (propTenantId) {
+           setSelectedTenantId(propTenantId);
+        } else if (list.length > 1) {
            setSelectedTenantId('all');
         } else if (list.length === 1) {
            setSelectedTenantId(list[0].id);
@@ -203,9 +229,15 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
 
   // Listener para motoristas globais (Correção: Busca na coleção raiz 'drivers')
   useEffect(() => {
-    const q = query(collection(db, 'drivers'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setGlobalDrivers(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+    const driversRef = ref(database, 'drivers');
+    const unsubscribe = onValue(driversRef, (snapshot) => {
+      const drivers: any[] = [];
+      if (snapshot.exists()) {
+        snapshot.forEach(child => {
+          drivers.push({ id: child.key!, ...child.val() });
+        });
+      }
+      setGlobalDrivers(drivers);
     }, (error) => {
       console.error("Erro ao buscar motoristas globais:", error);
     });
@@ -269,23 +301,34 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
     }
 
     const unsubscribes = targetIds.flatMap(tid => {
-      let entryQueryConstraints = [where('entry_time', '>=', startDate.toISOString()), orderBy('entry_time', 'desc'), limit(2000)];
-      let occurrenceQueryConstraints = [where('created_at', '>=', startDate.toISOString()), orderBy('created_at', 'desc')];
+      // RTDB Queries
+      let entriesQuery = query(ref(database, `tenants/${tid}/entries`), orderByChild('entry_time'), startAt(startDate.toISOString()));
+      let occurrencesQuery = query(ref(database, `tenants/${tid}/occurrences`), orderByChild('created_at'), startAt(startDate.toISOString()));
 
       if (endDate) {
-        entryQueryConstraints = [where('entry_time', '>=', startDate.toISOString()), where('entry_time', '<', endDate.toISOString()), orderBy('entry_time', 'desc'), limit(2000)];
-        occurrenceQueryConstraints = [where('created_at', '>=', startDate.toISOString()), where('created_at', '<', endDate.toISOString()), orderBy('created_at', 'desc')];
+        entriesQuery = query(ref(database, `tenants/${tid}/entries`), orderByChild('entry_time'), startAt(startDate.toISOString()), endAt(endDate.toISOString()));
+        occurrencesQuery = query(ref(database, `tenants/${tid}/occurrences`), orderByChild('created_at'), startAt(startDate.toISOString()), endAt(endDate.toISOString()));
       }
 
-      const entriesQuery = query(collection(db, 'tenants', tid, 'entries'), ...entryQueryConstraints);
-      const occurrencesQuery = query(collection(db, 'tenants', tid, 'occurrences'), ...occurrenceQueryConstraints);
-
-      const entriesUnsub = onSnapshot(entriesQuery, 
-        (snapshot) => setAllData(prev => ({ ...prev, entries: { ...prev.entries, [tid]: snapshot.docs.map(d => ({ id: d.id, ...d.data() })) } })),
+      const entriesUnsub = onValue(entriesQuery, 
+        (snapshot) => {
+          const data: any[] = [];
+          if (snapshot.exists()) {
+            snapshot.forEach(child => { data.push({ id: child.key!, ...child.val() }); });
+          }
+          setAllData(prev => ({ ...prev, entries: { ...prev.entries, [tid]: data } }));
+        },
         (err) => { console.error(`Error on entries listener for ${tid}:`, err); setError("Erro ao carregar dados de entrada."); }
       );
-      const occurrencesUnsub = onSnapshot(occurrencesQuery, 
-        (snapshot) => setAllData(prev => ({ ...prev, occurrences: { ...prev.occurrences, [tid]: snapshot.docs.map(d => ({ id: d.id, ...d.data() })) } })),
+      
+      const occurrencesUnsub = onValue(occurrencesQuery, 
+        (snapshot) => {
+          const data: any[] = [];
+          if (snapshot.exists()) {
+            snapshot.forEach(child => { data.push({ id: child.key!, ...child.val() }); });
+          }
+          setAllData(prev => ({ ...prev, occurrences: { ...prev.occurrences, [tid]: data } }));
+        },
         (err) => { console.error(`Error on occurrences listener for ${tid}:`, err); setError("Erro ao carregar dados de ocorrências."); }
       );
 
@@ -310,11 +353,15 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
     const unsubscribes = targetIds.map(tid => {
       // Buscamos os registros de entrada sem filtro de data, mas limitados aos mais recentes para performance
       // O filtro de 'no pátio' será feito localmente para garantir compatibilidade com null ou ""
-      const q = query(collection(db, 'tenants', tid, 'entries'), orderBy('entry_time', 'desc'), limit(500));
-      return onSnapshot(q, (snapshot) => {
-        const inside = snapshot.docs
-          .map(d => ({ id: d.id, ...d.data() }))
-          .filter((e: any) => !e.exit_time || e.exit_time === "" || e.exit_time === null);
+      const q = query(ref(database, `tenants/${tid}/entries`), orderByChild('entry_time'), limitToLast(500));
+      return onValue(q, (snapshot) => {
+        const inside: any[] = [];
+        if (snapshot.exists()) {
+           snapshot.forEach(child => {
+             const val = child.val();
+             if (!val.exit_time) inside.push({ id: child.key!, ...val });
+           });
+        }
         
         setVehiclesInsideData(prev => ({ ...prev, [tid]: inside }));
       }, (error) => {
@@ -1441,7 +1488,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
         <h2 className="text-3xl font-bold text-gray-800">Indicadores de Performance</h2>
         
         <div className="flex items-center gap-3">
-          {tenants.length > 1 && (
+          {tenants.length > 0 && (
             <div className="flex items-center bg-white border border-gray-300 rounded-lg px-3 py-2 shadow-sm">
               <Building2 className="w-4 h-4 text-gray-500 mr-2" />
               <select 

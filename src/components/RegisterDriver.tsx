@@ -1,13 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
-import { db } from './firebase';
-import { collection, doc, setDoc } from 'firebase/firestore';
+import { auth } from './firebase';
+import { getDatabase, ref, push, set, query, orderByChild, equalTo, get } from 'firebase/database';
 import { useAuth } from '../contexts/AuthContext';
-// src/components/RegisterDriver.tsx
-
-// Adicione 'Wifi' dentro das chaves
-import { User, Car, Phone, Wifi, Camera, Upload, Eraser, Save } from 'lucide-react'; 
-
-// import { Save, Eraser, Camera, Upload, Wifi } from 'lucide-react';
+import { User, Phone, Camera, Upload, Eraser, Save, AlertTriangle } from 'lucide-react';
 
 interface Props {
   onSuccess: () => void;
@@ -26,7 +21,17 @@ export default function RegisterDriver({ onSuccess, tenantId: propTenantId }: Pr
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  const database = getDatabase(auth.app);
   const activeTenantId = propTenantId || (userProfile as any)?.tenantId || user?.uid;
+
+  const formatCPF = (value: string) => {
+    return value
+      .replace(/\D/g, '')
+      .replace(/(\d{3})(\d)/, '$1.$2')
+      .replace(/(\d{3})(\d)/, '$1.$2')
+      .replace(/(\d{3})(\d{1,2})/, '$1-$2')
+      .replace(/(-\d{2})\d+?$/, '$1');
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -120,26 +125,6 @@ export default function RegisterDriver({ onSuccess, tenantId: propTenantId }: Pr
     });
   };
 
-  const testConnection = async () => {
-    try {
-      if (!activeTenantId) {
-        alert("Erro: Usuário não identificado.");
-        return;
-      }
-      
-      console.log("🔄 Testando conexão com Firestore...");
-      await setDoc(doc(db, 'tenants', activeTenantId), {
-        last_check: new Date().toISOString(),
-        status: 'active'
-      }, { merge: true });
-      
-      alert("✅ Conexão OK! A pasta 'tenants' foi verificada no banco de dados.");
-    } catch (err) {
-      console.error("❌ Erro de conexão:", err);
-      alert("❌ Erro ao conectar: " + (err instanceof Error ? err.message : String(err)));
-    }
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -147,6 +132,10 @@ export default function RegisterDriver({ onSuccess, tenantId: propTenantId }: Pr
     console.log("🚀 [RegisterDriver] Iniciando processo de salvamento...");
 
     try {
+      if (!name || !driverDocument) {
+        throw new Error('Nome e CPF são obrigatórios.');
+      }
+
       const canvas = canvasRef.current;
       if (!canvas) throw new Error('Canvas não encontrado');
 
@@ -158,10 +147,34 @@ export default function RegisterDriver({ onSuccess, tenantId: propTenantId }: Pr
         photoUrl = await convertFileToBase64(photo);
       }
 
-      console.log("💾 [RegisterDriver] Salvando motorista...");
-      
-      // Geração de ID antecipada em uma coleção global 'drivers'
-      const newDriverRef = doc(collection(db, 'drivers'));
+      // Verificar duplicidade de CPF no Realtime Database
+      const driversRef = ref(database, 'drivers');
+      let cpfExists = false;
+
+      try {
+        const q = query(driversRef, orderByChild('document'), equalTo(driverDocument));
+        const snapshot = await get(q);
+        cpfExists = snapshot.exists();
+      } catch (qErr: any) {
+        // Fallback: Se o índice não existir, busca tudo e filtra no cliente
+        if (qErr.message && qErr.message.includes("Index not defined")) {
+           console.warn("⚠️ Índice 'document' não encontrado. Usando verificação manual.");
+           const snapshot = await get(driversRef);
+           if (snapshot.exists()) {
+             snapshot.forEach(child => {
+               if (child.val().document === driverDocument) cpfExists = true;
+             });
+           }
+        } else {
+           throw qErr;
+        }
+      }
+
+      if (cpfExists) {
+        throw new Error('Já existe um motorista cadastrado com este CPF.');
+      }
+
+      console.log("💾 [RegisterDriver] Salvando motorista no RTDB...");
       
       const driverData = {
         name,
@@ -173,9 +186,9 @@ export default function RegisterDriver({ onSuccess, tenantId: propTenantId }: Pr
         created_at: new Date().toISOString()
       };
 
-      // Aguarda a confirmação real do servidor
-      await setDoc(newDriverRef, driverData);
-      console.log("✅ [RegisterDriver] Salvo com sucesso no Firestore. ID:", newDriverRef.id);
+      const newDriverRef = push(driversRef);
+      await set(newDriverRef, driverData);
+      console.log("✅ [RegisterDriver] Salvo com sucesso no RTDB. ID:", newDriverRef.key);
       
       setName('');
       setDriverDocument('');
@@ -185,9 +198,13 @@ export default function RegisterDriver({ onSuccess, tenantId: propTenantId }: Pr
       clearSignature();
       
       onSuccess();
-    } catch (err) {
+    } catch (err: any) {
       console.error("❌ [RegisterDriver] Erro fatal:", err);
-      setError(err instanceof Error ? err.message : 'Erro ao cadastrar motorista');
+      if (err.message && err.message.includes("Index not defined")) {
+        setError("Erro de Sistema: Índice 'document' não encontrado no banco de dados. Publique as regras no Firebase Console.");
+      } else {
+        setError(err instanceof Error ? err.message : 'Erro ao cadastrar motorista');
+      }
     } finally {
       setLoading(false);
     }
@@ -197,13 +214,6 @@ export default function RegisterDriver({ onSuccess, tenantId: propTenantId }: Pr
     <div>
       <div className="flex justify-between items-center mb-6">
         <h2 className="text-2xl font-bold text-gray-800">Cadastrar Motorista</h2>
-        <button 
-          type="button" 
-          onClick={testConnection}
-          className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-2 px-3 py-1 bg-blue-50 rounded-lg border border-blue-100"
-        >
-          <Wifi className="w-4 h-4" /> Testar Conexão
-        </button>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-6">
@@ -228,8 +238,10 @@ export default function RegisterDriver({ onSuccess, tenantId: propTenantId }: Pr
             <input
               type="text"
               value={driverDocument}
-              onChange={(e) => setDriverDocument(e.target.value)}
+              onChange={(e) => setDriverDocument(formatCPF(e.target.value))}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              placeholder="000.000.000-00"
+              maxLength={14}
               required
             />
           </div>
@@ -299,8 +311,9 @@ export default function RegisterDriver({ onSuccess, tenantId: propTenantId }: Pr
         </div>
 
         {error && (
-          <div className="bg-red-50 text-red-600 px-4 py-3 rounded-lg text-sm">
-            {error}
+          <div className="bg-red-50 text-red-600 px-4 py-3 rounded-lg text-sm flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4" />
+            <span>{error}</span>
           </div>
         )}
 

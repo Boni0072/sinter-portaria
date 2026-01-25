@@ -1,6 +1,6 @@
 import { useState, useEffect, Fragment, useRef } from 'react';
-import { db, Driver } from './firebase';
-import { collection, addDoc, getDocs, query, orderBy, where, doc, getDoc, onSnapshot, deleteDoc } from 'firebase/firestore';
+import { auth, Driver } from './firebase';
+import { getDatabase, ref, push, set, remove, onValue, get, query, orderByChild, equalTo } from 'firebase/database';
 import { useAuth } from '../contexts/AuthContext';
 import { Save, Building2, ChevronDown, ChevronRight, Trash2, User, Truck, X, Plus, Camera, Upload } from 'lucide-react';
 
@@ -33,6 +33,8 @@ export default function RegisterVehicle({ onSuccess, tenantId: propTenantId }: P
   const vehiclePhotoRef = useRef<HTMLInputElement>(null);
   const platePhotoRef = useRef<HTMLInputElement>(null);
 
+  const database = getDatabase(auth.app);
+
   useEffect(() => {
     const initTenants = async () => {
       if (!user?.uid) return;
@@ -44,26 +46,27 @@ export default function RegisterVehicle({ onSuccess, tenantId: propTenantId }: P
         let list: {id: string, name: string}[] = [];
 
         if (allowedTenants && Array.isArray(allowedTenants) && allowedTenants.length > 0) {
-          const promises = allowedTenants.map(id => getDoc(doc(db, 'tenants', id)));
-          const docs = await Promise.all(promises);
-          list = docs
-            .filter(d => d.exists())
-            .map(d => ({ id: d.id, name: d.data()?.name || 'Empresa sem nome' }));
+          const promises = allowedTenants.map(id => get(ref(database, `tenants/${id}`)));
+          const snapshots = await Promise.all(promises);
+          snapshots.forEach((snap, index) => {
+            if (snap.exists()) {
+              list.push({ id: allowedTenants[index], name: snap.val().name });
+            }
+          });
         } else {
-          const q = query(collection(db, 'tenants'), where('created_by', '==', user.uid));
-          const snapshot = await getDocs(q);
-          if (!snapshot.empty) {
-            list = snapshot.docs.map(doc => ({
-              id: doc.id,
-              name: doc.data().name || 'Empresa sem nome'
-            }));
+          const q = query(ref(database, 'tenants'), orderByChild('owner_id'), equalTo(user.uid));
+          const snapshot = await get(q);
+          if (snapshot.exists()) {
+            snapshot.forEach(child => {
+              list.push({ id: child.key!, name: child.val().name });
+            });
           }
         }
         
         if (list.length === 0 && defaultId) {
-           const docSnap = await getDoc(doc(db, 'tenants', defaultId));
-           if (docSnap.exists()) {
-             list.push({ id: docSnap.id, name: docSnap.data().name || 'Minha Empresa' });
+           const snap = await get(ref(database, `tenants/${defaultId}`));
+           if (snap.exists()) {
+             list.push({ id: defaultId, name: snap.val().name || 'Minha Empresa' });
            }
         }
 
@@ -88,47 +91,38 @@ export default function RegisterVehicle({ onSuccess, tenantId: propTenantId }: P
   }, [user, userProfile, propTenantId]);
 
   useEffect(() => {
-    if (tenants.length === 0 && !currentTenantId) {
-        setDrivers([]);
-        return;
-    }
-
-    const targets = tenants.length > 0 ? tenants : [{ id: currentTenantId, name: 'Current' }];
-    const unsubscribes: (() => void)[] = [];
-    
-    let allDriversData: { [tenantId: string]: Driver[] } = {};
-
-    targets.forEach(t => {
-        const q = query(collection(db, 'tenants', t.id, 'drivers'), orderBy('name'));
-        const unsubscribe = onSnapshot(q, (snapshot) => {
-            allDriversData[t.id] = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Driver[];
-            
-            const combinedDrivers = Object.values(allDriversData).flat();
-            const uniqueDrivers = Array.from(new Map(combinedDrivers.map(d => [d.id, d])).values());
-            uniqueDrivers.sort((a, b) => a.name.localeCompare(b.name));
-            setDrivers(uniqueDrivers);
-
-        }, (err) => {
-            console.error(`Erro ao carregar motoristas de ${t.id}:`, err);
-        });
-        unsubscribes.push(unsubscribe);
+    // Carrega motoristas da coleção global 'drivers' no RTDB
+    const driversRef = ref(database, 'drivers');
+    const unsubscribe = onValue(driversRef, (snapshot) => {
+        const driversList: Driver[] = [];
+        if (snapshot.exists()) {
+            snapshot.forEach(child => {
+                driversList.push({ id: child.key!, ...child.val() });
+            });
+        }
+        driversList.sort((a, b) => a.name.localeCompare(b.name));
+        setDrivers(driversList);
+    }, (err) => {
+        console.error("Erro ao carregar motoristas:", err);
     });
 
-    return () => {
-        unsubscribes.forEach(unsub => unsub());
-    };
-  }, [tenants, currentTenantId]);
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     if (!currentTenantId) return;
 
-    const q = query(
-      collection(db, 'tenants', currentTenantId, 'vehicles'),
-      orderBy('created_at', 'desc')
-    );
+    const vehiclesRef = ref(database, `tenants/${currentTenantId}/vehicles`);
+    const q = query(vehiclesRef, orderByChild('created_at'));
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const unsubscribe = onValue(q, (snapshot) => {
+      const list: any[] = [];
+      if (snapshot.exists()) {
+        snapshot.forEach(child => {
+          list.push({ id: child.key!, ...child.val() });
+        });
+      }
+      list.reverse(); // Mais recentes primeiro
       setVehicles(list);
     });
 
@@ -207,7 +201,7 @@ export default function RegisterVehicle({ onSuccess, tenantId: propTenantId }: P
   const handleDeleteVehicle = async (id: string) => {
       if (window.confirm('Tem certeza que deseja excluir este veículo?')) {
           try {
-              await deleteDoc(doc(db, 'tenants', currentTenantId, 'vehicles', id));
+              await remove(ref(database, `tenants/${currentTenantId}/vehicles/${id}`));
           } catch (e) {
               console.error("Erro ao excluir:", e);
               alert("Erro ao excluir veículo.");
@@ -232,7 +226,8 @@ export default function RegisterVehicle({ onSuccess, tenantId: propTenantId }: P
       
       const [vehiclePhotoUrl, platePhotoUrl] = await uploadsPromise;
 
-      await addDoc(collection(db, 'tenants', currentTenantId, 'vehicles'), {
+      const newVehicleRef = push(ref(database, `tenants/${currentTenantId}/vehicles`));
+      await set(newVehicleRef, {
         plate: plate.toUpperCase(),
         brand,
         model,

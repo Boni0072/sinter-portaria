@@ -6,7 +6,7 @@ import {
   signOut as firebaseSignOut, 
   onAuthStateChanged 
 } from 'firebase/auth';
-import { doc, setDoc, onSnapshot } from 'firebase/firestore';
+import { getDatabase, ref, set, onValue } from 'firebase/database';
 import { auth, db } from '../components/firebase';
 import type { UserProfile } from '../components/firebase';
 
@@ -25,6 +25,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const database = getDatabase(auth.app);
 
   useEffect(() => {
     let unsubscribeProfile: (() => void) | null = null;
@@ -39,11 +40,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       
       if (currentUser) {
         // Use onSnapshot para carregamento instantâneo do cache e atualizações em tempo real
-        const docRef = doc(db, 'profiles', currentUser.uid);
-        unsubscribeProfile = onSnapshot(docRef, 
-          (docSnap) => {
-            if (docSnap.exists()) {
-              setUserProfile({ id: docSnap.id, ...docSnap.data() } as UserProfile);
+        const userRef = ref(database, `profiles/${currentUser.uid}`);
+        unsubscribeProfile = onValue(userRef, 
+          (snapshot) => {
+            if (snapshot.exists()) {
+              setUserProfile({ id: snapshot.key, ...snapshot.val() } as UserProfile);
             }
             setLoading(false);
           },
@@ -71,8 +72,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signUp = async (email: string, password: string) => {
     const userCredential = await createUserWithEmailAndPassword(auth, email, password);
     
-    // Criar perfil do usuário no Firestore
-    await setDoc(doc(db, 'profiles', userCredential.user.uid), {
+    // Criar perfil do usuário no Realtime Database
+    await set(ref(database, `profiles/${userCredential.user.uid}`), {
       email: userCredential.user.email,
       role: 'admin', // Quem cria a conta inicial é Admin do seu Tenant
       tenantId: userCredential.user.uid, // Cria um novo Tenant ID

@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
-import { db } from './firebase';
-import { doc, updateDoc, setDoc, getDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
+import { auth, db } from './firebase';
+import { getDatabase, ref, get, set, update, onValue, query, orderByChild, equalTo } from 'firebase/database';
 import { useAuth } from '../contexts/AuthContext';
-import { LogOut, Users, ClipboardList, UserPlus, ChevronLeft, ChevronRight, Camera, Shield, ArrowRightLeft, Truck, BarChart3, CarFront, Building2, LayoutGrid, AlertTriangle, Menu } from 'lucide-react';
+import { LogOut, Users, ClipboardList, UserPlus, ChevronLeft, ChevronRight, Camera, Shield, ArrowRightLeft, Truck, BarChart3, CarFront, Building2, LayoutGrid, AlertTriangle, Menu, Wifi } from 'lucide-react';
 import RegisterEntry from './RegisterEntry';
 import EntriesList from './EntriesList';
 import UserManagement from './UserManagement';
@@ -31,8 +31,11 @@ export default function Dashboard() {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [isOffline, setIsOffline] = useState(false);
   const [availableTenants, setAvailableTenants] = useState<Tenant[]>([]);
   const [selectedTenantId, setSelectedTenantId] = useState<string>('');
+  const [retryCount, setRetryCount] = useState(0);
+  const database = getDatabase(auth.app);
 
   const [sidebarHue, setSidebarHue] = useState<number>(() => {
     const saved = localStorage.getItem('portal_sidebar_hue');
@@ -44,12 +47,12 @@ export default function Dashboard() {
     if (user && !loading) {
       const ensureProfile = async () => {
         try {
-          const userRef = doc(db, 'profiles', user.uid);
-          const userSnap = await getDoc(userRef);
+          const userRef = ref(database, `profiles/${user.uid}`);
+          const userSnap = await get(userRef);
 
           if (!userSnap.exists()) {
             // Cria o perfil APENAS se ele realmente não existir no banco
-            await setDoc(userRef, {
+            await set(userRef, {
               email: user.email,
               tenantId: user.uid,
               role: 'admin',
@@ -58,39 +61,52 @@ export default function Dashboard() {
             console.log('Perfil criado automaticamente.');
           } else {
             // Se existir, verifica apenas se falta o tenantId (sem sobrescrever permissões)
-            if (!userSnap.data().tenantId) {
-              await updateDoc(userRef, { tenantId: user.uid });
+            if (!userSnap.val().tenantId) {
+              await update(userRef, { tenantId: user.uid });
               console.log('Perfil corrigido: Tenant ID adicionado.');
             }
           }
-        } catch (err) {
-          console.error('Erro ao verificar/criar perfil:', err);
+        } catch (err: any) {
+          if (err.code === 'unavailable' || err.message?.includes('offline')) {
+            console.warn('Verificação de perfil ignorada (Offline).');
+            setIsOffline(true);
+          } else {
+            console.error('Erro ao verificar/criar perfil:', err);
+          }
         }
 
         // Auto-criação: Garante que a coleção 'tenants' e o documento da empresa existam
         try {
           if (!user?.uid) return;
-          const tenantRef = doc(db, 'tenants', user.uid);
-          const tenantSnap = await getDoc(tenantRef);
+          const tenantRef = ref(database, `tenants/${user.uid}`);
+          const tenantSnap = await get(tenantRef);
           
           // Só cria a estrutura da empresa se o usuário for o dono do perfil (tenantId == uid)
           // Isso evita criar empresas "fantasmas" para operadores/funcionários
           if (!tenantSnap.exists() && userProfile?.tenantId === user.uid) {
-            await setDoc(tenantRef, {
+            await set(tenantRef, {
               name: 'Minha Empresa',
               type: 'matriz',
               created_at: new Date().toISOString(),
               owner_id: user.uid,
-              email: user.email
+              email: user.email,
+              created_by: user.uid // Adicionado para consistência
             });
             console.log('Estrutura da empresa (tenants) criada com sucesso.');
           }
-        } catch (err) {
-          console.error('Erro ao criar estrutura da empresa:', err);
+        } catch (err: any) {
+          if (err.code === 'unavailable' || err.message?.includes('offline')) {
+            console.warn('Criação de empresa ignorada (Offline).');
+            setIsOffline(true);
+          } else {
+            console.error('Erro ao criar estrutura da empresa:', err);
+          }
         }
       };
       ensureProfile();
     }
+    // OTIMIZAÇÃO: Removido userProfile e retryCount das dependências para evitar loops de verificação
+    // A verificação de existência só precisa rodar quando o objeto 'user' (auth) muda.
   }, [user, loading]);
 
   // Carregar lista de empresas (Matriz + Filiais)
@@ -98,54 +114,64 @@ export default function Dashboard() {
     const myTenantId = userProfile?.tenantId || user?.uid;
     if (!myTenantId) return;
 
-    let unsubscribeFiliais: () => void;
+    const tenantsRef = ref(database, 'tenants');
+    let q;
 
-    // 1. Monitora a empresa atual (Matriz ou Filial)
-    const unsubscribeMyTenant = onSnapshot(doc(db, 'tenants', myTenantId), (docSnap) => {
-      if (docSnap.exists()) {
-        const myData = docSnap.data();
-        const myTenant: Tenant = { id: myTenantId, name: myData.name || 'Minha Empresa', type: myData.type || 'matriz' };
+    // Se for admin/dono, busca todas as empresas que ele é dono (Matrizes e Filiais)
+    if (userProfile?.role === 'admin') {
+       q = query(tenantsRef, orderByChild('owner_id'), equalTo(user.uid));
+    } else {
+       // Se não for admin, mantém a lógica de buscar filiais da empresa vinculada
+       q = query(tenantsRef, orderByChild('parentId'), equalTo(myTenantId));
+    }
 
-        // SEMPRE busca por filiais vinculadas. Se existirem, mostramos no menu.
-        // Isso corrige o problema onde marcar a empresa como "Filial" escondia as sub-unidades.
-        const q = query(collection(db, 'tenants'), where('parentId', '==', myTenantId));
-        
-        if (unsubscribeFiliais) unsubscribeFiliais();
-        
-        unsubscribeFiliais = onSnapshot(q, (snapshot) => {
-          const filiais = snapshot.docs.map(d => ({ 
-            id: d.id, 
-            name: d.data().name, 
-            type: 'filial' as const 
-          }));
-
-          // Se tiver filiais, ou se não for explicitamente uma filial sem filhos, mostra a lista
-          if (filiais.length > 0 || myData.type !== 'filial') {
-            let all = [myTenant, ...filiais];
-            
-            // Filtrar por permissão do usuário (se não for admin ou se tiver restrições explícitas)
-            // @ts-ignore
-            if (userProfile?.allowedTenants && userProfile.allowedTenants.length > 0) {
-               // @ts-ignore
-               all = all.filter(t => userProfile.allowedTenants.includes(t.id));
-            }
-            setAvailableTenants(all);
-          } else {
-            setAvailableTenants([myTenant]);
-          }
-
-          // Mantém a seleção atual se válida, senão seleciona a matriz
-          if (!selectedTenantId || (selectedTenantId !== myTenantId && !filiais.find(f => f.id === selectedTenantId))) {
-              setSelectedTenantId(myTenantId);
-          }
+    const unsubscribe = onValue(q, (snapshot) => {
+      const loadedTenants: Tenant[] = [];
+      
+      if (snapshot.exists()) {
+        snapshot.forEach((child) => {
+          loadedTenants.push({
+            id: child.key!,
+            name: child.val().name,
+            type: child.val().type
+          });
         });
+      }
+
+      // Para não-admins, precisamos garantir que a própria empresa (myTenantId) esteja na lista
+      // já que a query acima buscou apenas os filhos (parentId)
+      if (userProfile?.role !== 'admin') {
+         get(ref(database, `tenants/${myTenantId}`)).then(snap => {
+            if (snap.exists() && !loadedTenants.find(t => t.id === myTenantId)) {
+               setAvailableTenants(prev => {
+                 if (prev.find(t => t.id === myTenantId)) return prev;
+                 return [{ id: snap.key!, name: snap.val().name, type: snap.val().type }, ...prev];
+               });
+            }
+         });
+      }
+
+      // Filtragem de segurança extra (allowedTenants)
+      let finalTenants = loadedTenants;
+      // @ts-ignore
+      if (userProfile?.allowedTenants && userProfile.allowedTenants.length > 0) {
+         // @ts-ignore
+         finalTenants = finalTenants.filter(t => userProfile.allowedTenants.includes(t.id));
+      }
+
+      setAvailableTenants(finalTenants);
+
+      // Seleção inicial inteligente
+      if (!selectedTenantId && finalTenants.length > 0) {
+         if (finalTenants.length > 1) {
+            setSelectedTenantId('all');
+         } else {
+            setSelectedTenantId(finalTenants[0].id);
+         }
       }
     });
 
-    return () => {
-      unsubscribeMyTenant();
-      if (unsubscribeFiliais) unsubscribeFiliais();
-    };
+    return () => unsubscribe();
   }, [user, userProfile]); // Removido currentView para evitar recarregamentos desnecessários
 
   const handleLogoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -198,10 +224,72 @@ export default function Dashboard() {
     }
   }, [userProfile, loading, currentView]);
 
-  if (loading) {
+  // Função de emergência para recriar dados se o carregamento falhar
+  const handleManualRepair = async () => {
+    if (!user) return;
+    try {
+      // Cria perfil
+      await set(ref(database, `profiles/${user.uid}`), {
+        email: user.email,
+        tenantId: user.uid,
+        role: 'admin',
+        created_at: new Date().toISOString()
+      });
+      
+      // Cria empresa
+      await set(ref(database, `tenants/${user.uid}`), {
+        name: 'Minha Empresa (Recuperada)',
+        type: 'matriz',
+        owner_id: user.uid,
+        email: user.email,
+        created_at: new Date().toISOString(),
+        created_by: user.uid // Adicionado para consistência
+      });
+      
+      window.location.reload();
+    } catch (e) {
+      alert("Erro ao reparar: " + e);
+    }
+  };
+
+  // Proteção para garantir que o perfil do usuário esteja carregado antes de renderizar
+  if (loading || !userProfile) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-50">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-900"></div>
+        <div className="flex flex-col items-center gap-4">
+          {isOffline ? (
+            <>
+              <Wifi className="w-12 h-12 text-red-500" />
+              <p className="text-gray-600 font-medium text-center">
+                Sem conexão com o banco de dados.<br/>
+                Verifique sua internet ou firewall.
+              </p>
+              <button 
+                onClick={() => { setIsOffline(false); setRetryCount(c => c + 1); }}
+                className="mt-2 px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                Tentar Novamente
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-900"></div>
+              <p className="text-gray-500 font-medium">Carregando perfil...</p>
+            </>
+          )}
+          <button 
+            onClick={() => signOut()} 
+            className="text-sm text-blue-600 hover:underline mt-2"
+          >
+            Demorando muito? Clique para Sair
+          </button>
+          <button 
+            onClick={handleManualRepair} 
+            className="text-xs text-gray-400 hover:text-gray-600 mt-4 border border-gray-300 px-2 py-1 rounded"
+          >
+            Reparar Dados (Criar Empresa/Usuário)
+          </button>
+        </div>
       </div>
     );
   }
@@ -490,13 +578,34 @@ export default function Dashboard() {
       <div className={`flex-1 flex flex-col ${isSidebarCollapsed ? 'ml-20' : 'ml-64'} transition-all duration-300 min-h-screen`}>
         {/* Header */}
         <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-8 shadow-sm sticky top-0 z-10">
-            <button
-              onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
-              className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 transition-colors"
-              title={isSidebarCollapsed ? "Expandir Menu" : "Recolher Menu"}
-            >
-              <Menu className="w-6 h-6" />
-            </button>
+            <div className="flex items-center gap-4">
+              <button
+                onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+                className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 transition-colors"
+                title={isSidebarCollapsed ? "Expandir Menu" : "Recolher Menu"}
+              >
+                <Menu className="w-6 h-6" />
+              </button>
+
+              {availableTenants.length > 0 && (
+                <div className="hidden md:flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded-lg border border-gray-200">
+                  <Building2 className="w-4 h-4 text-gray-500" />
+                  <select
+                    value={selectedTenantId}
+                    onChange={(e) => setSelectedTenantId(e.target.value)}
+                    className="bg-transparent border-none text-sm font-medium text-gray-700 focus:ring-0 cursor-pointer outline-none min-w-[150px]"
+                    disabled={availableTenants.length === 1}
+                  >
+                    {availableTenants.length > 1 && <option value="all">Todas as Empresas</option>}
+                    {availableTenants.map(tenant => (
+                      <option key={tenant.id} value={tenant.id}>
+                        {tenant.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
 
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-3">

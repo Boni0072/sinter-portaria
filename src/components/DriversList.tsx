@@ -1,91 +1,50 @@
 import { useState, useEffect } from 'react';
-import { db, Driver } from './firebase';
-import { collection, getDocs, query, orderBy, where, limit, startAfter, QueryDocumentSnapshot, deleteDoc, doc, updateDoc } from 'firebase/firestore';
+import { auth, Driver } from './firebase';
+import { getDatabase, ref, remove, update, onValue } from 'firebase/database';
 import { useAuth } from '../contexts/AuthContext';
-import { User, Phone, FileText, PenTool, Maximize2, X, ChevronDown, Edit2, Trash2, Save } from 'lucide-react';
-
-const ITEMS_PER_PAGE = 10;
+import { User, Phone, FileText, Maximize2, X, Edit2, Trash2, Save } from 'lucide-react';
 
 export default function DriversList() {
-  const { user, userProfile } = useAuth();
+  const { userProfile } = useAuth();
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [lastVisible, setLastVisible] = useState<QueryDocumentSnapshot | null>(null);
-  const [hasMore, setHasMore] = useState(true);
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
   
   const [editingDriver, setEditingDriver] = useState<Driver | null>(null);
   const [editForm, setEditForm] = useState({ name: '', document: '', phone: '' });
   const [saving, setSaving] = useState(false);
 
+  const database = getDatabase(auth.app);
+
   useEffect(() => {
-    if (userProfile) loadDrivers(true);
-  }, [userProfile]);
-
-  const loadDrivers = async (isInitial = false) => {
-    try {
-      if (isInitial) {
-        setLoading(true);
-      } else {
-        setLoadingMore(true);
+    const driversRef = ref(database, 'drivers');
+    
+    const unsubscribe = onValue(driversRef, (snapshot) => {
+      const data: Driver[] = [];
+      if (snapshot.exists()) {
+        snapshot.forEach((child) => {
+          data.push({ id: child.key!, ...child.val() });
+        });
       }
-
-      const tenantId = (userProfile as any)?.tenantId || user?.uid;
-      if (!tenantId) return;
-
-      let q = query(
-        collection(db, 'drivers'), 
-        orderBy('created_at', 'desc'),
-        limit(ITEMS_PER_PAGE)
-      );
-
-      if (!isInitial && lastVisible) {
-        q = query(
-          collection(db, 'tenants', tenantId, 'drivers'), 
-          orderBy('created_at', 'desc'),
-          startAfter(lastVisible),
-          limit(ITEMS_PER_PAGE)
-        );
-      }
-
-      const querySnapshot = await getDocs(q);
+      // Ordena por data de criação (mais recentes primeiro)
+      data.sort((a, b) => {
+        const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return dateB - dateA;
+      });
       
-      const data = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Driver[];
-
-      if (isInitial) {
-        setDrivers(data);
-      } else {
-        setDrivers(prev => [...prev, ...data]);
-      }
-
-      if (querySnapshot.docs.length > 0) {
-        setLastVisible(querySnapshot.docs[querySnapshot.docs.length - 1]);
-      }
-
-      if (querySnapshot.docs.length < ITEMS_PER_PAGE) {
-        setHasMore(false);
-      }
-    } catch (err) {
-      console.error('Erro ao carregar motoristas:', err);
-    } finally {
+      setDrivers(data);
       setLoading(false);
-      setLoadingMore(false);
-    }
-  };
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   const handleDelete = async (id: string) => {
     if (!window.confirm('Tem certeza que deseja excluir este motorista?')) return;
     
     try {
-      const tenantId = (userProfile as any)?.tenantId || user?.uid;
-      if (!tenantId) throw new Error("Tenant ID não encontrado.");
-
-      await deleteDoc(doc(db, 'tenants', tenantId, 'drivers', id));
-      setDrivers(prev => prev.filter(d => d.id !== id));
+      await remove(ref(database, `drivers/${id}`));
     } catch (err) {
       console.error('Erro ao excluir motorista:', err);
       alert('Erro ao excluir motorista. Tente novamente.');
@@ -105,16 +64,12 @@ export default function DriversList() {
     if (!editingDriver) return;
     setSaving(true);
     try {
-      const tenantId = (userProfile as any)?.tenantId || user?.uid;
-      if (!tenantId) throw new Error("Tenant ID não encontrado.");
-
-      await updateDoc(doc(db, 'tenants', tenantId, 'drivers', editingDriver.id), {
+      await update(ref(database, `drivers/${editingDriver.id}`), {
         name: editForm.name,
         document: editForm.document,
         phone: editForm.phone || null
       });
       
-      setDrivers(prev => prev.map(d => d.id === editingDriver.id ? { ...d, ...editForm } : d));
       setEditingDriver(null);
     } catch (err) {
       console.error('Erro ao atualizar motorista:', err);
@@ -235,31 +190,9 @@ export default function DriversList() {
         ))}
       </div>
 
-      {hasMore && (
-        <div className="mt-8 text-center">
-          <button
-            onClick={() => loadDrivers(false)}
-            disabled={loadingMore}
-            className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-blue-700 bg-blue-100 hover:bg-blue-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
-          >
-            {loadingMore ? (
-              <>
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-700 mr-2"></div>
-                Carregando...
-              </>
-            ) : (
-              <>
-                <ChevronDown className="w-4 h-4 mr-2" />
-                Carregar Mais
-              </>
-            )}
-          </button>
-        </div>
-      )}
-
       {zoomedImage && (
         <div 
-          className="fixed inset-0 z-50 flex items-center justify-center bg-white/95 backdrop-blur-sm animate-in fade-in duration-200 p-4"
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-white/95 backdrop-blur-sm animate-in fade-in duration-200 p-4"
           onClick={() => setZoomedImage(null)}
         >
           <img 
