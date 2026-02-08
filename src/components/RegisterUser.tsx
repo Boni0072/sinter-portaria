@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { db } from './firebase';
-import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { auth } from './firebase';
+import { getDatabase, ref, get, update } from 'firebase/database';
 import { User, Save, Check, AlertCircle, Loader2, Search } from 'lucide-react';
 
 export default function RegisterUser() {
@@ -8,6 +8,7 @@ export default function RegisterUser() {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<{type: 'success' | 'error', text: string} | null>(null);
   const [allowedPages, setAllowedPages] = useState<string[]>([]);
+  const database = getDatabase(auth.app);
 
   const availablePages = [
     { id: 'indicators', label: 'Indicadores' },
@@ -34,9 +35,9 @@ export default function RegisterUser() {
     setLoading(true);
     setStatus(null);
     try {
-      const docSnap = await getDoc(doc(db, 'profiles', uid));
+      const docSnap = await get(ref(database, `profiles/${uid}`));
       if (docSnap.exists()) {
-        const data = docSnap.data();
+        const data = docSnap.val();
         let pages = data.allowedPages || [];
         // Correção automática: se for string, converte para array
         if (typeof pages === 'string') pages = [pages];
@@ -61,14 +62,10 @@ export default function RegisterUser() {
     setStatus(null);
 
     try {
-      const userRef = doc(db, 'profiles', uid);
-      
-      // IMPORTANTE: Usamos { merge: true } para atualizar apenas os campos especificados
-      // sem sobrescrever outros dados do usuário (como nome, email, foto, etc)
-      await setDoc(userRef, {
+      await update(ref(database, `profiles/${uid}`), {
         allowedPages: allowedPages,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
+        updated_at: new Date().toISOString()
+      });
 
       setStatus({ type: 'success', text: 'Permissões salvas com sucesso!' });
     } catch (error) {

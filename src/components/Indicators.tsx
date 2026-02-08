@@ -59,7 +59,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
   const [error, setError] = useState<any>(null);
   const [allData, setAllData] = useState<AllData>({ entries: {}, occurrences: {}, drivers: {} });
   const [vehiclesInsideData, setVehiclesInsideData] = useState<Record<string, any[]>>({});
-  const [globalDrivers, setGlobalDrivers] = useState<any[]>([]);
+  const [tenantDrivers, setTenantDrivers] = useState<Record<string, any[]>>({});
   const [durationStats, setDurationStats] = useState({
     under1h: 0,
     under4h: 0,
@@ -227,22 +227,23 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
     geocodeTenants();
   }, [tenants]);
 
-  // Listener para motoristas globais (Correção: Busca na coleção raiz 'drivers')
+  // Listener para motoristas por tenant
   useEffect(() => {
-    const driversRef = ref(database, 'drivers');
-    const unsubscribe = onValue(driversRef, (snapshot) => {
-      const drivers: any[] = [];
-      if (snapshot.exists()) {
-        snapshot.forEach(child => {
-          drivers.push({ id: child.key!, ...child.val() });
+    if (!activeTenantId) return;
+    const targetIds = activeTenantId === 'all' ? tenants.map(t => t.id) : [activeTenantId];
+    
+    const unsubscribes = targetIds.map(tid => {
+        return onValue(ref(database, `tenants/${tid}/drivers`), (snapshot) => {
+            const drivers: any[] = [];
+            if (snapshot.exists()) {
+                snapshot.forEach(child => drivers.push({ id: child.key!, ...child.val() }));
+            }
+            setTenantDrivers(prev => ({ ...prev, [tid]: drivers }));
         });
-      }
-      setGlobalDrivers(drivers);
-    }, (error) => {
-      console.error("Erro ao buscar motoristas globais:", error);
     });
-    return () => unsubscribe();
-  }, []);
+
+    return () => unsubscribes.forEach(u => u());
+  }, [activeTenantId, tenants]);
 
   // Effect for setting up listeners
   useEffect(() => {
@@ -395,7 +396,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
 
     const entries = Object.values(allData.entries).flat();
     const occurrences = Object.values(allData.occurrences).flat();
-    const totalDrivers = globalDrivers.length;
+    const totalDrivers = Object.values(tenantDrivers).flat().length;
     const currentVehiclesInside = targetIds.flatMap(tid => vehiclesInsideData[tid] || []);
 
     const now = new Date();
@@ -567,7 +568,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
     }
 
     setLoading(false);
-  }, [allData, activeTenantId, tenants, globalDrivers, vehiclesInsideData]);
+  }, [allData, activeTenantId, tenants, tenantDrivers, vehiclesInsideData]);
 
   // Effect for Stay Duration calculations (real-time, not date-filtered)
   useEffect(() => {
@@ -674,7 +675,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
   const handleCardClick = (metricType: string) => {
     const entries = Object.values(allData.entries).flat();
     const occurrences = Object.values(allData.occurrences).flat();
-    const drivers = [...globalDrivers];
+    const drivers = Object.values(tenantDrivers).flat();
     
     let data: any[] = [];
     let title = '';

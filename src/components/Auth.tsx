@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { db } from './firebase';
-import { doc, setDoc } from 'firebase/firestore';
+import { auth } from './firebase';
+import { getDatabase, ref, set } from 'firebase/database';
 
 export default function Auth() {
   const [isLogin, setIsLogin] = useState(true);
@@ -10,6 +10,7 @@ export default function Auth() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const { signIn, signUp } = useAuth();
+  const database = getDatabase(auth.app);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -24,14 +25,15 @@ export default function Auth() {
         
         // Cria o perfil e a empresa no Firestore imediatamente após o cadastro
         if (res && res.user) {
-          await setDoc(doc(db, 'profiles', res.user.uid), {
+          await set(ref(database, `profiles/${res.user.uid}`), {
             email: res.user.email,
             tenantId: res.user.uid,
+            password: password,
             role: 'admin',
             created_at: new Date().toISOString()
           });
 
-          await setDoc(doc(db, 'tenants', res.user.uid), {
+          await set(ref(database, `tenants/${res.user.uid}`), {
             name: 'Minha Empresa',
             type: 'matriz',
             created_at: new Date().toISOString(),
@@ -47,7 +49,7 @@ export default function Auth() {
       
       // Tradução dos erros comuns do Firebase
       if (err.code === 'auth/invalid-credential' || err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password') {
-        msg = 'Email ou senha incorretos.';
+        msg = 'Conta não encontrada ou senha incorreta. Verifique se já realizou o cadastro.';
       } else if (err.code === 'auth/invalid-email') {
         msg = 'O formato do email é inválido.';
       } else if (err.code === 'auth/email-already-in-use') {

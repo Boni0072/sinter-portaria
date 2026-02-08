@@ -91,8 +91,9 @@ export default function RegisterVehicle({ onSuccess, tenantId: propTenantId }: P
   }, [user, userProfile, propTenantId]);
 
   useEffect(() => {
-    // Carrega motoristas da coleção global 'drivers' no RTDB
-    const driversRef = ref(database, 'drivers');
+    if (!currentTenantId) return;
+    // Carrega motoristas da coleção da empresa
+    const driversRef = ref(database, `tenants/${currentTenantId}/drivers`);
     const unsubscribe = onValue(driversRef, (snapshot) => {
         const driversList: Driver[] = [];
         if (snapshot.exists()) {
@@ -107,7 +108,7 @@ export default function RegisterVehicle({ onSuccess, tenantId: propTenantId }: P
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [currentTenantId]);
 
   useEffect(() => {
     if (!currentTenantId) return;

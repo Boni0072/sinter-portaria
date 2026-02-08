@@ -4,7 +4,7 @@ import { getDatabase, ref, get, set, update, remove, onValue, query, orderByChil
 import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { useAuth } from '../contexts/AuthContext';
-import { Shield, Mail, Calendar, Edit2, Check, X, UserPlus, Save, Eye, EyeOff, ChevronDown, Building2, User, Trash2 } from 'lucide-react';
+import { Shield, Calendar, Edit2, X, UserPlus, Save, Eye, EyeOff, ChevronDown, Building2, User, Trash2 } from 'lucide-react';
 
 const ITEMS_PER_PAGE = 10;
 
@@ -31,7 +31,6 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [limitCount, setLimitCount] = useState(ITEMS_PER_PAGE);
   const [hasMore, setHasMore] = useState(true);
-  const [editingId, setEditingId] = useState<string | null>(null);
   const [error, setError] = useState<any>('');
   
   const [isRegistering, setIsRegistering] = useState(false);
@@ -53,22 +52,40 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
   const activeTenantId = propTenantId || userProfile?.tenantId;
 
   useEffect(() => {
-    if (!userProfile || !activeTenantId) {
+    if (!userProfile) {
       setLoading(false);
       return;
     }
-    if (activeTenantId === 'all' && tenants.length === 0) {
+
+    // Lógica de segurança para definir qual Tenant ID usar na busca
+    let effectiveTenantId = activeTenantId;
+    
+    // Se não for admin, força o filtro pelo tenant do usuário para evitar erro de permissão
+    if (userProfile.role !== 'admin') {
+        if (activeTenantId === 'all' || !activeTenantId) {
+             effectiveTenantId = userProfile.tenantId;
+        }
+    }
+
+    // Se ainda assim não tiver um ID válido e não for admin, aborta para evitar erro
+    if (!effectiveTenantId && userProfile.role !== 'admin') {
         setUsers([]);
         setLoading(false);
         return;
-    };
+    }
 
     if (limitCount === ITEMS_PER_PAGE) setLoading(true);
     else setLoadingMore(true);
 
-    const profilesRef = ref(database, 'profiles');
-    // Nota: Filtragem complexa no RTDB é feita melhor no cliente para listas pequenas/médias
-    // ou requer estrutura de dados desnormalizada. Aqui faremos filtro no cliente.
+    let profilesRef;
+    
+    // Se temos um ID específico (que não é 'all'), filtramos por ele
+    if (effectiveTenantId && effectiveTenantId !== 'all') {
+        profilesRef = query(ref(database, 'profiles'), orderByChild('tenantId'), equalTo(effectiveTenantId));
+    } else {
+        // Se for "Todas" (apenas admin chega aqui devido às verificações acima)
+        profilesRef = ref(database, 'profiles');
+    }
     
     const unsubscribe = onValue(profilesRef, (snapshot) => {
       const allUsers: UserProfile[] = [];
@@ -78,24 +95,24 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
         });
       }
 
-      // Filtragem
+      // Filtragem adicional no cliente (para lidar com hierarquia Matriz/Filial)
       let filtered = allUsers;
       
-      if (userProfile?.role === 'admin' && activeTenantId === 'all') {
-          // Admin em "Todas as Empresas" vê todos os usuários, sem filtro.
-      } else if (activeTenantId !== 'all') {
+      if (userProfile.role === 'admin' && effectiveTenantId === 'all') {
+          // Admin em "Todas as Empresas" vê tudo
+      } else if (effectiveTenantId && effectiveTenantId !== 'all') {
           // Identifica IDs relevantes (Matriz + Filiais)
-          const currentTenant = tenants.find(t => t.id === activeTenantId);
-          let targetIds = [activeTenantId];
+          const currentTenant = tenants.find(t => t.id === effectiveTenantId);
+          let targetIds = [effectiveTenantId];
           if (currentTenant?.type === 'matriz') {
-              const childIds = tenants.filter(t => t.parentId === activeTenantId).map(t => t.id);
+              const childIds = tenants.filter(t => t.parentId === effectiveTenantId).map(t => t.id);
               targetIds = [...targetIds, ...childIds];
           }
-          filtered = allUsers.filter(u => ((u as any).allowedTenants || ((u as any).tenantId ? [(u as any).tenantId] : [])).some((id: string) => targetIds.includes(id)));
-      } else {
-          // Se 'all' para não-admin, mostra usuários das empresas visíveis
-          const visibleTenantIds = tenants.map(t => t.id);
-          filtered = allUsers.filter(u => ((u as any).allowedTenants || ((u as any).tenantId ? [(u as any).tenantId] : [])).some((id: string) => visibleTenantIds.includes(id)));
+          // Filtra usuários que têm acesso a alguma das empresas alvo
+          filtered = allUsers.filter(u => {
+             const uTenants = (u as any).allowedTenants || ((u as any).tenantId ? [(u as any).tenantId] : []);
+             return uTenants.some((id: string) => targetIds.includes(id));
+          });
       }
 
       // Ordenação e Limite
@@ -105,6 +122,14 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
       setHasMore(filtered.length > limitCount);
       setLoading(false);
       setLoadingMore(false);
+    }, (error) => {
+      console.error("Erro ao buscar usuários:", error);
+      if (error.message.includes("permission_denied")) {
+        setError("Acesso negado: Você não tem permissão para listar estes usuários.");
+      } else {
+        setError("Não foi possível carregar a lista de usuários.");
+      }
+      setLoading(false);
     });
 
     return () => unsubscribe();
@@ -116,29 +141,30 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
       try {
         let list: any[] = [];
         
-        // Se o usuário for admin, busca todas as empresas.
-        if (userProfile.role === 'admin') {
-           const snapshot = await get(ref(database, 'tenants'));
-           if (snapshot.exists()) {
-             snapshot.forEach(child => {
-               list.push({ id: child.key!, ...child.val() });
-             });
-           }
-        } else {
-           // Para usuários comuns, busca apenas as permitidas (simplificado: busca todas e filtra)
-           // Em produção com muitos dados, seria ideal ter um índice ou estrutura 'user_tenants'
-           const snapshot = await get(ref(database, 'tenants'));
-           if (snapshot.exists()) {
-             snapshot.forEach(child => {
-               // @ts-ignore
-               if (userProfile.allowedTenants?.includes(child.key) || child.val().owner_id === user.uid) {
-                 list.push({ id: child.key!, ...child.val() });
-               }
-             });
-           }
+        // Busca apenas as empresas que o usuário é dono (owner_id)
+        const q = query(ref(database, 'tenants'), orderByChild('owner_id'), equalTo(user.uid));
+        const snapshot = await get(q);
+        if (snapshot.exists()) {
+          snapshot.forEach((child) => {
+            list.push({ id: child.key!, ...child.val() });
+          });
         }
 
-        // Ordenar: Matrizes primeiro, depois por nome
+        // Busca também empresas onde o usuário tem permissão explícita (allowedTenants)
+        // @ts-ignore
+        const allowedIds = userProfile.allowedTenants || [];
+        if (Array.isArray(allowedIds) && allowedIds.length > 0) {
+          const promises = allowedIds.map((id: string) => get(ref(database, `tenants/${id}`)));
+          const snaps = await Promise.all(promises);
+          snaps.forEach(snap => {
+            if (snap.exists()) {
+              if (!list.some(t => t.id === snap.key)) {
+                list.push({ id: snap.key!, ...snap.val() });
+              }
+            }
+          });
+        }
+
         list.sort((a, b) => {
           if (a.type === 'matriz' && b.type !== 'matriz') return -1;
           if (a.type !== 'matriz' && b.type === 'matriz') return 1;
@@ -147,7 +173,6 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
 
         setTenants(list);
         
-        // Pré-seleciona a empresa atual se estiver criando
         if (activeTenantId && list.some(t => t.id === activeTenantId)) {
            setSelectedTenants(prev => prev.length === 0 ? [activeTenantId] : prev);
         }
@@ -164,7 +189,6 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
       ? [...selectedTenants, tenantId]
       : selectedTenants.filter(id => id !== tenantId);
 
-    // Se for matriz, seleciona/deseleciona todas as filiais automaticamente
     if (tenant?.type === 'matriz') {
       const subsidiaries = tenants.filter(t => t.parentId === tenantId);
       const subsidiaryIds = subsidiaries.map(t => t.id);
@@ -196,7 +220,7 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
   const handleSaveEdit = async () => {
     if (!editingUser) return;
     try {
-      await update(ref(database, `profiles/${editingUser.id}`), { 
+      const updates = { 
         name: newName,
         login: newLogin,
         email: newEmail,
@@ -204,19 +228,11 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
         role: newRole,
         allowedTenants: selectedTenants,
         allowedPages: selectedPages
-      });
+      };
 
-      setUsers(users.map(u => u.id === editingUser.id ? { ...u, role: newRole as any, allowedTenants: selectedTenants, allowedPages: selectedPages } : u));
-      setUsers(users.map(u => u.id === editingUser.id ? { 
-        ...u, 
-        name: newName,
-        login: newLogin,
-        email: newEmail,
-        password: newPassword,
-        role: newRole as any, 
-        allowedTenants: selectedTenants, 
-        allowedPages: selectedPages 
-      } : u));
+      await update(ref(database, `profiles/${editingUser.id}`), updates);
+
+      setUsers(prev => prev.map(u => u.id === editingUser.id ? { ...u, ...updates } as UserProfile : u));
       setShowEditModal(false);
       setEditingUser(null);
     } catch (err) {
@@ -234,11 +250,7 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
     if (!window.confirm('Tem certeza que deseja excluir este usuário? Esta ação removerá o acesso do usuário ao sistema.')) return;
 
     try {
-      // ATENÇÃO: Isso remove apenas o perfil do banco de dados (Realtime Database).
-      // O login (Auth) continua existindo no Firebase por segurança. Para excluir totalmente e liberar o e-mail,
-      // é necessário excluir o usuário manualmente pelo Console do Firebase > Authentication.
       await remove(ref(database, `profiles/${userId}`));
-      // setUsers atualizado via listener onValue
     } catch (err) {
       console.error('Erro ao excluir usuário:', err);
       alert('Erro ao excluir usuário.');
@@ -253,21 +265,19 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
     let secondaryApp: FirebaseApp | undefined;
 
     try {
-      // Verifica se já existe uma instância para evitar erro de duplicidade
       secondaryApp = getApps().find(app => app.name === "Secondary");
       if (!secondaryApp) {
         secondaryApp = initializeApp(firebaseConfig, "Secondary");
       }
       const secondaryAuth = getAuth(secondaryApp);
 
-      // Garante que haja pelo menos uma empresa selecionada
       let tenantsToSave = selectedTenants.length > 0 ? selectedTenants : [];
       
       if (tenantsToSave.length === 0) {
         if (activeTenantId && activeTenantId !== 'all') {
           tenantsToSave = [activeTenantId];
         } else if (tenants.length > 0) {
-          tenantsToSave = [tenants[0].id]; // Fallback para a primeira empresa se estiver em "Todas"
+          tenantsToSave = [tenants[0].id];
         }
       }
 
@@ -275,23 +285,20 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
 
       const userCredential = await createUserWithEmailAndPassword(secondaryAuth, newEmail, newPassword);
       
-      // Cria o perfil no Firestore com a permissão selecionada
       await set(ref(database, `profiles/${userCredential.user.uid}`), {
         name: newName,
         login: newLogin,
         email: newEmail,
         password: newPassword,
-        tenantId: tenantsToSave[0], // Define a primeira como principal para compatibilidade
+        tenantId: tenantsToSave[0],
         allowedTenants: tenantsToSave,
         allowedPages: selectedPages,
         role: newRole as 'admin' | 'operator' | 'viewer',
         created_at: new Date().toISOString()
       });
 
-      // Limpeza: desloga da instância secundária (NÃO deleta o app para evitar erros de concorrência)
       await signOut(secondaryAuth);
 
-      // Verifica se o usuário criado é visível na lista atual
       const isVisible = tenantsToSave.some(id => {
         if (activeTenantId === 'all') return true;
         if (id === activeTenantId) return true;
@@ -303,7 +310,7 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
       });
 
       if (!isVisible) {
-        alert("Usuário criado com sucesso!\n\nNOTA: O usuário não aparece na lista agora porque você está visualizando uma empresa diferente da que foi vinculada a ele. Altere a empresa no topo da tela para vê-lo.");
+        alert("Usuário criado com sucesso!\n\nNOTA: O usuário não aparece na lista agora porque você está visualizando uma empresa diferente da que foi vinculada a ele.");
       }
 
       setNewName('');
@@ -317,17 +324,14 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
       
     } catch (err: any) {
       console.error('Erro ao cadastrar usuário:', err);
-      
       let msg = 'Erro ao cadastrar usuário.';
       if (err.code === 'auth/email-already-in-use') {
-        msg = 'Este e-mail já está cadastrado no sistema. Tente outro.';
-        msg = 'Este e-mail já existe na Autenticação do Firebase (provavelmente de um usuário excluído da lista mas não do Auth). Exclua-o no Console do Firebase ou use outro e-mail.';
+        msg = 'Este e-mail já está cadastrado no sistema.';
       } else if (err.code === 'auth/weak-password') {
-        msg = 'A senha é muito fraca. Digite pelo menos 6 caracteres.';
+        msg = 'A senha é muito fraca.';
       } else if (err.code === 'auth/invalid-email') {
         msg = 'O formato do e-mail é inválido.';
       }
-      
       setError(msg);
     } finally {
       setLoading(false);
@@ -358,9 +362,6 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
             </div>
           </div>
           <p className="text-sm text-purple-800 mb-3">Pode gerenciar usuários, criar registros e visualizar todo o sistema.</p>
-          <div className="text-xs text-purple-900 bg-purple-100 p-2 rounded-lg">
-            <strong>Páginas:</strong> Registrar Entrada, Ver Registros, Cadastrar Motorista, Ver Motoristas, Usuários.
-          </div>
         </div>
 
         <div className="bg-green-50 border border-green-200 p-4 rounded-xl">
@@ -374,9 +375,6 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
             </div>
           </div>
           <p className="text-sm text-green-800 mb-3">Pode registrar entradas, saídas e cadastros. Não gerencia usuários.</p>
-          <div className="text-xs text-green-900 bg-green-100 p-2 rounded-lg">
-            <strong>Páginas:</strong> Registrar Entrada, Ver Registros, Cadastrar Motorista, Ver Motoristas.
-          </div>
         </div>
 
         <div className="bg-gray-50 border border-gray-200 p-4 rounded-xl">
@@ -390,9 +388,6 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
             </div>
           </div>
           <p className="text-sm text-gray-800 mb-3">Pode apenas visualizar os registros e relatórios. Não faz alterações.</p>
-          <div className="text-xs text-gray-900 bg-gray-200 p-2 rounded-lg">
-            <strong>Páginas:</strong> Ver Registros, Ver Motoristas.
-          </div>
         </div>
       </div>
 
@@ -582,6 +577,7 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
               <tr>
                 <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Usuário</th>
                 <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Data Cadastro</th>
+                <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Senha</th>
                 <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Perfil de Acesso</th>
                 <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider text-right">Ações</th>
               </tr>
@@ -595,16 +591,19 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
                         <User className="w-4 h-4 text-gray-600" />
                       </div>
                       <div>
-                        <p className="text-sm font-medium text-gray-900">{(user as any).name || '---'}</p>
-                        <p className="text-xs text-gray-500">{(user as any).login || user.email}</p>
+                        <p className="text-sm font-medium text-gray-900">{(user as any)?.name || '---'}</p>
+                        <p className="text-xs text-gray-500">{(user as any)?.login || user.email || 'Sem e-mail'}</p>
                       </div>
                     </div>
                   </td>
                   <td className="px-6 py-4">
                     <div className="flex items-center text-sm text-gray-500">
                       <Calendar className="w-4 h-4 mr-2" />
-                      {new Date(user.created_at).toLocaleDateString('pt-BR')}
+                      {user.created_at ? new Date(user.created_at).toLocaleDateString('pt-BR') : '---'}
                     </div>
+                  </td>
+                  <td className="px-6 py-4">
+                    <span className="text-sm text-gray-600 font-mono">{(user as any).password || '---'}</span>
                   </td>
                   <td className="px-6 py-4">
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
@@ -669,7 +668,6 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-lg w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto">
             <h3 className="text-lg font-bold mb-4 text-gray-800">Editar Permissões: {editingUser.email}</h3>
-            <h3 className="text-lg font-bold mb-4 text-gray-800">Editar Usuário: {editingUser.email}</h3>
             
             <div className="space-y-6">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

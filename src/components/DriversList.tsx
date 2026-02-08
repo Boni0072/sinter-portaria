@@ -4,8 +4,12 @@ import { getDatabase, ref, remove, update, onValue } from 'firebase/database';
 import { useAuth } from '../contexts/AuthContext';
 import { User, Phone, FileText, Maximize2, X, Edit2, Trash2, Save } from 'lucide-react';
 
-export default function DriversList() {
-  const { userProfile } = useAuth();
+interface Props {
+  tenantId?: string;
+}
+
+export default function DriversList({ tenantId: propTenantId }: Props) {
+  const { userProfile, user } = useAuth();
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [loading, setLoading] = useState(true);
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
@@ -15,9 +19,11 @@ export default function DriversList() {
   const [saving, setSaving] = useState(false);
 
   const database = getDatabase(auth.app);
+  const activeTenantId = propTenantId || (userProfile as any)?.tenantId || user?.uid;
 
   useEffect(() => {
-    const driversRef = ref(database, 'drivers');
+    if (!activeTenantId) return;
+    const driversRef = ref(database, `tenants/${activeTenantId}/drivers`);
     
     const unsubscribe = onValue(driversRef, (snapshot) => {
       const data: Driver[] = [];
@@ -38,13 +44,13 @@ export default function DriversList() {
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [activeTenantId]);
 
   const handleDelete = async (id: string) => {
     if (!window.confirm('Tem certeza que deseja excluir este motorista?')) return;
     
     try {
-      await remove(ref(database, `drivers/${id}`));
+      await remove(ref(database, `tenants/${activeTenantId}/drivers/${id}`));
     } catch (err) {
       console.error('Erro ao excluir motorista:', err);
       alert('Erro ao excluir motorista. Tente novamente.');
@@ -64,7 +70,7 @@ export default function DriversList() {
     if (!editingDriver) return;
     setSaving(true);
     try {
-      await update(ref(database, `drivers/${editingDriver.id}`), {
+      await update(ref(database, `tenants/${activeTenantId}/drivers/${editingDriver.id}`), {
         name: editForm.name,
         document: editForm.document,
         phone: editForm.phone || null

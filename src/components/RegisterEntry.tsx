@@ -153,12 +153,12 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
   }, [user, userProfile, propTenantId]);
 
   const loadDrivers = async () => {
-    // Evita recarregar se já tiver motoristas na memória
-    if (drivers.length > 0) return;
+    if (!currentTenantId) return;
+    
     console.log("Iniciando loadDrivers...");
     try {
-      // Busca todos os motoristas da coleção global 'drivers'
-      const driversRef = ref(database, 'drivers');
+      // Busca motoristas da empresa selecionada
+      const driversRef = ref(database, `tenants/${currentTenantId}/drivers`);
       const snapshot = await get(driversRef);
       
       const allDrivers: Driver[] = [];
@@ -204,7 +204,7 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
 
   useEffect(() => {
     loadDrivers();
-  }, []);
+  }, [currentTenantId]); // Recarrega quando a empresa muda
 
   // Obter geolocalização ao montar o componente
   useEffect(() => {

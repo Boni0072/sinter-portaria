@@ -1,8 +1,8 @@
 import { useState, useEffect, Fragment, useRef } from 'react';
 import { auth } from './firebase';
-import { getDatabase, ref, get, update, onValue, query, orderByChild, limitToLast, equalTo } from 'firebase/database';
+import { getDatabase, ref, get, update, remove, onValue, query, orderByChild, limitToLast, equalTo, startAt, endAt } from 'firebase/database';
 import { useAuth } from '../contexts/AuthContext';
-import { LogOut, Clock, Calendar, Image as ImageIcon, ChevronDown, ChevronRight, X, User, Download, Building2, ChevronsDown, ChevronsUp, Search, MapPin, Scale, Camera, Save, Upload, FileText } from 'lucide-react';
+import { LogOut, Clock, Calendar, Image as ImageIcon, ChevronDown, ChevronRight, X, User, Download, Building2, ChevronsDown, ChevronsUp, Search, MapPin, Scale, Camera, Save, Upload, FileText, Trash2, Filter } from 'lucide-react';
 
 interface EntryWithDetails {
   id: string;
@@ -57,6 +57,9 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set([new Date().toLocaleDateString('pt-BR')]));
   const [searchTerm, setSearchTerm] = useState('');
   const [viewEntry, setViewEntry] = useState<EntryWithDetails | null>(null);
+  const [dateRange, setDateRange] = useState('recent');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
 
   // Estados para o Modal de Pesagem
   const [isWeightModalOpen, setIsWeightModalOpen] = useState(false);
@@ -192,7 +195,10 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
   }, [user, userProfile, propTenantId]);
 
   // Reset entries map when filter changes
-  useEffect(() => setEntriesPerTenant({}), [selectedTenantId]);
+  useEffect(() => {
+    setEntriesPerTenant({});
+    setEntries([]);
+  }, [selectedTenantId, dateRange, customStart, customEnd]);
 
   useEffect(() => {
     if (!user) {
@@ -220,8 +226,43 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
       else setLoadingMore(true);
 
       unsubscribes = targetIds.map(tid => {
-        // RTDB: limitToLast pega os mais recentes (baseado no tempo), mas vem em ordem ascendente
-        const q = query(ref(database, `tenants/${tid}/entries`), orderByChild('entry_time'), limitToLast(limitCount));
+        let q;
+        
+        if (dateRange === 'recent') {
+            q = query(ref(database, `tenants/${tid}/entries`), orderByChild('entry_time'), limitToLast(limitCount));
+        } else {
+            let startStr = '', endStr = '';
+            const now = new Date();
+            
+            if (dateRange === 'today') {
+                const start = new Date(now.setHours(0,0,0,0));
+                const end = new Date(now.setHours(23,59,59,999));
+                startStr = start.toISOString();
+                endStr = end.toISOString();
+            } else if (dateRange === 'yesterday') {
+                const start = new Date(now.setDate(now.getDate() - 1));
+                start.setHours(0,0,0,0);
+                const end = new Date(start);
+                end.setHours(23,59,59,999);
+                startStr = start.toISOString();
+                endStr = end.toISOString();
+            } else if (dateRange === 'thisMonth') {
+                const start = new Date(now.getFullYear(), now.getMonth(), 1);
+                const end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+                startStr = start.toISOString();
+                endStr = end.toISOString();
+            } else if (dateRange === 'custom' && customStart && customEnd) {
+                startStr = new Date(customStart + 'T00:00:00').toISOString();
+                endStr = new Date(customEnd + 'T23:59:59').toISOString();
+            }
+
+            if (startStr && endStr) {
+                q = query(ref(database, `tenants/${tid}/entries`), orderByChild('entry_time'), startAt(startStr), endAt(endStr));
+            } else {
+                // Fallback se datas inválidas
+                q = query(ref(database, `tenants/${tid}/entries`), orderByChild('entry_time'), limitToLast(limitCount));
+            }
+        }
 
         return onValue(q, async (snapshot) => {
         try {
@@ -254,7 +295,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
           };
 
           const [driversData, vehiclesData, usersData] = await Promise.all([
-            fetchDocsByIds(`drivers`, driverIds), // Motoristas agora são globais
+            fetchDocsByIds(`tenants/${tid}/drivers`, driverIds), // Motoristas por tenant
             fetchDocsByIds(`tenants/${tid}/vehicles`, vehicleIds),
             fetchDocsByIds('profiles', userIds)
           ]);
@@ -314,7 +355,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
     return () => {
       unsubscribes.forEach(u => u());
     };
-  }, [selectedTenantId, limitCount, tenants]);
+  }, [selectedTenantId, limitCount, tenants, dateRange, customStart, customEnd]);
 
   // Combine and sort entries from all tenants
   useEffect(() => {
@@ -396,6 +437,16 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
     } catch (err) {
       console.error('Erro ao registrar saída:', err);
       alert("Erro ao registrar saída. Verifique o console.");
+    }
+  };
+
+  const handleDelete = async (entry: EntryWithDetails) => {
+    if (!window.confirm('Tem certeza que deseja excluir este registro permanentemente?')) return;
+    try {
+      await remove(ref(database, `tenants/${entry.tenantId}/entries/${entry.id}`));
+    } catch (err) {
+      console.error("Erro ao excluir:", err);
+      alert("Erro ao excluir registro.");
     }
   };
 
@@ -741,6 +792,29 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
             </div>
         )}
 
+        <div className="flex items-center bg-white border border-gray-300 rounded-lg px-3 py-2 shadow-sm">
+            <Filter className="w-4 h-4 text-gray-500 mr-2" />
+            <select 
+              value={dateRange}
+              onChange={(e) => setDateRange(e.target.value)}
+              className="bg-transparent border-none text-sm text-gray-700 focus:ring-0 cursor-pointer outline-none"
+            >
+              <option value="recent">Recentes (Últimos {limitCount})</option>
+              <option value="today">Hoje</option>
+              <option value="yesterday">Ontem</option>
+              <option value="thisMonth">Este Mês</option>
+              <option value="custom">Personalizado</option>
+            </select>
+        </div>
+
+        {dateRange === 'custom' && (
+            <div className="flex items-center gap-2">
+                <input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)} className="border rounded px-2 py-1 text-sm" />
+                <span>-</span>
+                <input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)} className="border rounded px-2 py-1 text-sm" />
+            </div>
+        )}
+
         <button
           onClick={handleExport}
           disabled={entries.length === 0}
@@ -907,7 +981,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
                     </span>
                   </td>
                   <td className="px-6 py-2 whitespace-nowrap">
-                    <div className="flex space-x-2">
+                    <div className="flex space-x-2 items-center">
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -934,6 +1008,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
                     </div>
                   </td>
                   <td className="px-6 py-2 whitespace-nowrap">
+                    <div className="flex items-center gap-2">
                     {!entry.exit_time ? (
                       <button
                         onClick={(e) => {
@@ -950,6 +1025,17 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
                         Finalizado
                       </span>
                     )}
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            handleDelete(entry);
+                        }}
+                        className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-full transition"
+                        title="Excluir Registro"
+                    >
+                        <Trash2 className="w-4 h-4" />
+                    </button>
+                    </div>
                   </td>
                 </tr>
                   ))}
@@ -961,7 +1047,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
       </div>
       )}
 
-      {hasMore && (
+      {hasMore && dateRange === 'recent' && (
         <div className="mt-8 text-center">
           <button
             onClick={() => setLimitCount(prev => prev + ITEMS_PER_PAGE)}

@@ -12,8 +12,9 @@ import Indicators from './Indicators';
 import RegisterVehicle from './RegisterVehicle';
 import CompanySettings from './CompanySettings';
 import RegisterOccurrence from './RegisterOccurrence';
+import SaasAdmin from './SaasAdmin';
 
-type View = 'entries' | 'register-entry' | 'drivers' | 'register-driver' | 'users' | 'indicators' | 'register-vehicle' | 'company-settings' | 'register-occurrence';
+type View = 'entries' | 'register-entry' | 'drivers' | 'register-driver' | 'users' | 'indicators' | 'register-vehicle' | 'company-settings' | 'register-occurrence' | 'saas-admin';
 
 interface Tenant {
   id: string;
@@ -25,9 +26,9 @@ export default function Dashboard() {
   const { user, userProfile, signOut, loading } = useAuth();
   const [currentView, setCurrentView] = useState<View>('indicators');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [customLogo, setCustomLogo] = useState<string | null>(localStorage.getItem('portal_custom_logo'));
-  const [portalTitle, setPortalTitle] = useState(localStorage.getItem('portal_title') || 'Sistema de Portaria');
-  const [portalSubtitle, setPortalSubtitle] = useState(localStorage.getItem('portal_subtitle') || 'Controle de Acesso');
+  const [customLogo, setCustomLogo] = useState<string | null>(null);
+  const [portalTitle, setPortalTitle] = useState('Sistema de Portaria');
+  const [portalSubtitle, setPortalSubtitle] = useState('Controle de Acesso');
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -37,10 +38,24 @@ export default function Dashboard() {
   const [retryCount, setRetryCount] = useState(0);
   const database = getDatabase(auth.app);
 
-  const [sidebarHue, setSidebarHue] = useState<number>(() => {
-    const saved = localStorage.getItem('portal_sidebar_hue');
-    return saved ? parseInt(saved) : 220;
-  });
+  const [sidebarColor, setSidebarColor] = useState<string>('#122854');
+
+  // Carregar e sincronizar configurações da empresa (Tenant)
+  useEffect(() => {
+    if (selectedTenantId) {
+      const tenantRef = ref(database, `tenants/${selectedTenantId}`);
+      const unsubscribe = onValue(tenantRef, (snapshot) => {
+        if (snapshot.exists()) {
+          const data = snapshot.val();
+          setSidebarColor(data.sidebarColor || '#122854');
+          setCustomLogo(data.customLogo || null);
+          setPortalTitle(data.portalTitle || 'Sistema de Portaria');
+          setPortalSubtitle(data.portalSubtitle || 'Controle de Acesso');
+        }
+      });
+      return () => unsubscribe();
+    }
+  }, [selectedTenantId, database]);
 
   // Auto-correção: Garante que o usuário atual tenha um perfil e tenantId
   useEffect(() => {
@@ -161,13 +176,10 @@ export default function Dashboard() {
 
       setAvailableTenants(finalTenants);
 
-      // Seleção inicial inteligente
-      if (!selectedTenantId && finalTenants.length > 0) {
-         if (finalTenants.length > 1) {
-            setSelectedTenantId('all');
-         } else {
-            setSelectedTenantId(finalTenants[0].id);
-         }
+      // Seleção inicial estrita: Sempre seleciona a primeira empresa disponível se nenhuma estiver selecionada
+      // Removemos a lógica de 'all' para garantir isolamento de contexto
+      if ((!selectedTenantId || selectedTenantId === 'all') && finalTenants.length > 0) {
+         setSelectedTenantId(finalTenants[0].id);
       }
     });
 
@@ -178,10 +190,12 @@ export default function Dashboard() {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
-      reader.onloadend = () => {
+      reader.onloadend = async () => {
         const base64String = reader.result as string;
         setCustomLogo(base64String);
-        localStorage.setItem('portal_custom_logo', base64String);
+        if (selectedTenantId) {
+            await update(ref(database, `tenants/${selectedTenantId}`), { customLogo: base64String });
+        }
       };
       reader.readAsDataURL(file);
     }
@@ -215,6 +229,7 @@ export default function Dashboard() {
     if (!loading && userProfile) {
       if (!canAccess(currentView)) {
         const allViews: View[] = ['indicators', 'register-entry', 'entries', 'register-driver', 'drivers', 'register-vehicle', 'users', 'company-settings', 'register-occurrence'];
+        if (user?.email === 'ander.fj@hotmail.com') allViews.push('saas-admin');
         const firstAllowed = allViews.find(v => canAccess(v));
         
         if (firstAllowed) {
@@ -294,8 +309,20 @@ export default function Dashboard() {
     );
   }
 
+  // BLOQUEIO DE SEGURANÇA:
+  // Se não houver um Tenant selecionado (ou o usuário não tiver permissão), não renderiza nada.
+  // Isso previne vazamento de dados por componentes que tentam buscar "tudo" quando o ID é nulo.
+  if (!selectedTenantId || selectedTenantId === 'all') {
+    // Se houver tenants disponíveis, o useEffect acima irá selecionar um.
+    // Se não houver, o usuário não tem empresa vinculada.
+    if (availableTenants.length === 0 && !loading) {
+       return <div className="flex items-center justify-center h-screen">Você não está vinculado a nenhuma empresa. Contate o suporte.</div>;
+    }
+    return <div className="flex items-center justify-center h-screen"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-900"></div></div>;
+  }
+
   const commonProps = {
-    tenantId: selectedTenantId || userProfile?.tenantId || user?.uid
+    tenantId: selectedTenantId // Agora é estritamente o selecionado, nunca fallback genérico
   };
 
   const renderView = () => {
@@ -323,6 +350,8 @@ export default function Dashboard() {
       case 'register-occurrence':
         // @ts-ignore
         return <RegisterOccurrence onSuccess={() => setCurrentView('indicators')} {...commonProps} />;
+      case 'saas-admin':
+        return <SaasAdmin />;
       default:
         return <Indicators {...commonProps} />;
     }
@@ -335,9 +364,9 @@ export default function Dashboard() {
         className={`${
           isSidebarCollapsed ? 'w-20' : 'w-64'
         } text-white transition-all duration-300 fixed h-full z-10 flex flex-col shadow-xl`}
-        style={{ backgroundColor: `hsl(${sidebarHue}, 65%, 20%)` }}
+        style={{ backgroundColor: sidebarColor }}
       >
-        <div className={`p-6 flex flex-col items-center border-b ${isSidebarCollapsed ? 'px-2' : ''}`} style={{ borderColor: `hsl(${sidebarHue}, 65%, 30%)` }}>
+        <div className={`p-6 flex flex-col items-center border-b ${isSidebarCollapsed ? 'px-2' : ''}`} style={{ borderColor: 'rgba(255,255,255,0.1)' }}>
           <div 
             className="bg-white/10 p-3 rounded-xl mb-3 shadow-lg backdrop-blur-sm relative group cursor-pointer overflow-hidden"
             onClick={() => fileInputRef.current?.click()}
@@ -380,8 +409,9 @@ export default function Dashboard() {
                   />
                   <button
                     onClick={() => {
-                      localStorage.setItem('portal_title', portalTitle);
-                      localStorage.setItem('portal_subtitle', portalSubtitle);
+                      if (selectedTenantId) {
+                          update(ref(database, `tenants/${selectedTenantId}`), { portalTitle, portalSubtitle });
+                      }
                       setIsEditingTitle(false);
                     }}
                     className="w-full py-1 bg-green-500 hover:bg-green-600 text-white text-xs font-bold rounded transition-colors"
@@ -417,7 +447,7 @@ export default function Dashboard() {
                 ? 'text-white font-medium shadow-inner'
                 : 'text-white/70 hover:bg-white/10 hover:text-white'
             }`}
-            style={{ backgroundColor: currentView === 'indicators' ? `hsl(${sidebarHue}, 65%, 30%)` : 'transparent' }}
+            style={{ backgroundColor: currentView === 'indicators' ? 'rgba(255,255,255,0.1)' : 'transparent' }}
           >
             <BarChart3 className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Indicadores</span>}
@@ -433,7 +463,7 @@ export default function Dashboard() {
                 ? 'text-white font-medium shadow-inner'
                 : 'text-white/70 hover:bg-white/10 hover:text-white'
             }`}
-            style={{ backgroundColor: currentView === 'register-entry' ? `hsl(${sidebarHue}, 65%, 30%)` : 'transparent' }}
+            style={{ backgroundColor: currentView === 'register-entry' ? 'rgba(255,255,255,0.1)' : 'transparent' }}
           >
             <ArrowRightLeft className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Registrar Entrada</span>}
@@ -449,7 +479,7 @@ export default function Dashboard() {
                 ? 'text-white font-medium shadow-inner'
                 : 'text-white/70 hover:bg-white/10 hover:text-white'
             }`}
-            style={{ backgroundColor: currentView === 'register-occurrence' ? `hsl(${sidebarHue}, 65%, 30%)` : 'transparent' }}
+            style={{ backgroundColor: currentView === 'register-occurrence' ? 'rgba(255,255,255,0.1)' : 'transparent' }}
           >
             <AlertTriangle className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Registrar Ocorrência</span>}
@@ -465,7 +495,7 @@ export default function Dashboard() {
                 ? 'text-white font-medium shadow-inner'
                 : 'text-white/70 hover:bg-white/10 hover:text-white'
             }`}
-            style={{ backgroundColor: currentView === 'entries' ? `hsl(${sidebarHue}, 65%, 30%)` : 'transparent' }}
+            style={{ backgroundColor: currentView === 'entries' ? 'rgba(255,255,255,0.1)' : 'transparent' }}
           >
             <Truck className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Ver Registros</span>}
@@ -481,7 +511,7 @@ export default function Dashboard() {
                 ? 'text-white font-medium shadow-inner'
                 : 'text-white/70 hover:bg-white/10 hover:text-white'
             }`}
-            style={{ backgroundColor: currentView === 'register-driver' ? `hsl(${sidebarHue}, 65%, 30%)` : 'transparent' }}
+            style={{ backgroundColor: currentView === 'register-driver' ? 'rgba(255,255,255,0.1)' : 'transparent' }}
           >
             <UserPlus className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Cadastrar Motorista</span>}
@@ -497,7 +527,7 @@ export default function Dashboard() {
                 ? 'text-white font-medium shadow-inner'
                 : 'text-white/70 hover:bg-white/10 hover:text-white'
             }`}
-            style={{ backgroundColor: currentView === 'drivers' ? `hsl(${sidebarHue}, 65%, 30%)` : 'transparent' }}
+            style={{ backgroundColor: currentView === 'drivers' ? 'rgba(255,255,255,0.1)' : 'transparent' }}
           >
             <Users className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Ver Motoristas</span>}
@@ -513,7 +543,7 @@ export default function Dashboard() {
                 ? 'text-white font-medium shadow-inner'
                 : 'text-white/70 hover:bg-white/10 hover:text-white'
             }`}
-            style={{ backgroundColor: currentView === 'register-vehicle' ? `hsl(${sidebarHue}, 65%, 30%)` : 'transparent' }}
+            style={{ backgroundColor: currentView === 'register-vehicle' ? 'rgba(255,255,255,0.1)' : 'transparent' }}
           >
             <CarFront className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Cadastrar Veículo</span>}
@@ -529,7 +559,7 @@ export default function Dashboard() {
                 ? 'text-white font-medium shadow-inner'
                 : 'text-white/70 hover:bg-white/10 hover:text-white'
             }`}
-            style={{ backgroundColor: currentView === 'company-settings' ? `hsl(${sidebarHue}, 65%, 30%)` : 'transparent' }}
+            style={{ backgroundColor: currentView === 'company-settings' ? 'rgba(255,255,255,0.1)' : 'transparent' }}
           >
             <Building2 className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Minha Empresa</span>}
@@ -545,29 +575,46 @@ export default function Dashboard() {
                 ? 'text-white font-medium shadow-inner'
                 : 'text-white/70 hover:bg-white/10 hover:text-white'
             }`}
-            style={{ backgroundColor: currentView === 'users' ? `hsl(${sidebarHue}, 65%, 30%)` : 'transparent' }}
+            style={{ backgroundColor: currentView === 'users' ? 'rgba(255,255,255,0.1)' : 'transparent' }}
           >
             <Shield className="w-5 h-5 min-w-[1.25rem]" />
             {!isSidebarCollapsed && <span>Usuários</span>}
           </button>
           )}
+
+          {/* Botão Exclusivo para Admin SaaS */}
+          {user?.email === 'ander.fj@hotmail.com' && (
+          <button
+            onClick={() => setCurrentView('saas-admin')}
+            title={isSidebarCollapsed ? "Admin SaaS" : ""}
+            className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-lg transition ${
+              currentView === 'saas-admin'
+                ? 'text-white font-medium shadow-inner'
+                : 'text-white/70 hover:bg-white/10 hover:text-white'
+            }`}
+            style={{ backgroundColor: currentView === 'saas-admin' ? 'rgba(255,255,255,0.1)' : 'transparent' }}
+          >
+            <Shield className="w-5 h-5 min-w-[1.25rem]" />
+            {!isSidebarCollapsed && <span>Admin SaaS</span>}
+          </button>
+          )}
         </nav>
 
         {!isSidebarCollapsed && (
-          <div className="p-4 border-t" style={{ borderColor: `hsl(${sidebarHue}, 65%, 30%)` }}>
+          <div className="p-4 border-t" style={{ borderColor: 'rgba(255,255,255,0.1)' }}>
             <div className="px-2">
                <label className="text-[10px] uppercase tracking-wider text-white/50 font-bold mb-0 block">Cor do Menu</label>
                <input 
-                 type="range" 
-                 min="0" 
-                 max="360" 
-                 value={sidebarHue} 
+                 type="color" 
+                 value={sidebarColor} 
                  onChange={(e) => {
-                    const val = parseInt(e.target.value);
-                    setSidebarHue(val);
-                    localStorage.setItem('portal_sidebar_hue', val.toString());
+                    const newColor = e.target.value;
+                    setSidebarColor(newColor);
+                    if (selectedTenantId) {
+                        update(ref(database, `tenants/${selectedTenantId}`), { sidebarColor: newColor });
+                    }
                  }}
-                 className="w-full h-1.5 bg-black/20 rounded-lg appearance-none cursor-pointer accent-white"
+                 className="w-full h-8 cursor-pointer rounded border-0 p-0 bg-transparent"
                />
             </div>
           </div>
@@ -596,7 +643,6 @@ export default function Dashboard() {
                     className="bg-transparent border-none text-sm font-medium text-gray-700 focus:ring-0 cursor-pointer outline-none min-w-[150px]"
                     disabled={availableTenants.length === 1}
                   >
-                    {availableTenants.length > 1 && <option value="all">Todas as Empresas</option>}
                     {availableTenants.map(tenant => (
                       <option key={tenant.id} value={tenant.id}>
                         {tenant.name}

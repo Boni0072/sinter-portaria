@@ -148,7 +148,7 @@ export default function RegisterDriver({ onSuccess, tenantId: propTenantId }: Pr
       }
 
       // Verificar duplicidade de CPF no Realtime Database
-      const driversRef = ref(database, 'drivers');
+      const driversRef = ref(database, `tenants/${activeTenantId}/drivers`);
       let cpfExists = false;
 
       try {
