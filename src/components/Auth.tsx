@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { auth } from './firebase';
 import { getDatabase, ref, set } from 'firebase/database';
+import { Shield, Truck } from 'lucide-react';
 
 export default function Auth() {
   const [isLogin, setIsLogin] = useState(true);
@@ -69,10 +70,56 @@ export default function Auth() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-slate-100 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-8">
-        <div className="flex items-center justify-center mb-0">
-          <img src="/caminhao.png" alt="Logo" className="w-92 h-auto object-contain" />
+    <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4 relative overflow-hidden">
+      <style>{`
+        @keyframes orbit {
+          from { transform: rotate(0deg) translateX(35vmin) rotate(0deg); }
+          to   { transform: rotate(360deg) translateX(35vmin) rotate(-360deg); }
+        }
+        @keyframes orbit-reverse {
+          from { transform: rotate(360deg) translateX(45vmin) rotate(-360deg); }
+          to   { transform: rotate(0deg) translateX(45vmin) rotate(0deg); }
+        }
+        @keyframes orbit-inner {
+          from { transform: rotate(180deg) translateX(25vmin) rotate(-180deg); }
+          to   { transform: rotate(540deg) translateX(25vmin) rotate(-540deg); }
+        }
+      `}</style>
+      {/* Fundo Animado Mais Intenso */}
+      <div className="absolute inset-0 overflow-hidden">
+        <div className="absolute -top-[10%] -left-[10%] w-[50%] h-[50%] rounded-full bg-blue-600/30 blur-[100px] animate-pulse"></div>
+        <div className="absolute top-[20%] right-[10%] w-[40%] h-[40%] rounded-full bg-cyan-400/20 blur-[100px] animate-pulse" style={{ animationDelay: '1s' }}></div>
+        <div className="absolute -bottom-[10%] left-[20%] w-[60%] h-[60%] rounded-full bg-blue-800/20 blur-[100px] animate-pulse" style={{ animationDelay: '2s' }}></div>
+        
+        {/* Logo Circulando pela tela */}
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+           <img 
+             src="/Secontaf1.png" 
+             alt="" 
+             className="w-32 h-32 object-contain opacity-30"
+             style={{ animation: 'orbit 15s linear infinite' }}
+           />
+        </div>
+
+        {/* Ícone Shield Circulando (Sentido Inverso e Mais Longe) */}
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+           <div className="text-blue-900/20" style={{ animation: 'orbit-reverse 25s linear infinite' }}>
+              <Shield className="w-24 h-24" />
+           </div>
+        </div>
+
+        {/* Ícone Truck Circulando (Raio Menor e Começando em outro ponto) */}
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+           <div className="text-blue-700/20" style={{ animation: 'orbit-inner 20s linear infinite' }}>
+              <Truck className="w-20 h-20" />
+           </div>
+        </div>
+      </div>
+
+      <div className="bg-white/80 backdrop-blur-md rounded-2xl shadow-2xl w-full max-w-md p-8 relative z-10 border border-white/50">
+        <div className="flex items-center justify-center mb-2 relative">
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-40 h-40 bg-blue-500/20 blur-2xl rounded-full animate-pulse"></div>
+          <img src="/Secontaf1.png" alt="Logo" className="w-64 h-auto object-contain relative z-10 drop-shadow-sm" />
         </div>
 
         <h1 className="text-3xl font-bold text-center text-gray-800 mb-2 -mt-10">
@@ -136,8 +183,8 @@ export default function Auth() {
             className="text-blue-600 hover:text-blue-700 text-sm font-medium"
           >
             {isLogin
-              ? 'Não tem conta? Cadastre-se'
-              : 'Já tem conta? Entre'}
+              ? ''
+              : ''}
           </button>
         </div>
       </div>
