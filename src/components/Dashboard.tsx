@@ -395,7 +395,7 @@ export default function Dashboard() {
       >
         <div className={`p-4 flex flex-col items-center border-b ${isSidebarCollapsed ? 'px-2' : ''}`} style={{ borderColor: 'rgba(255,255,255,0.1)' }}>
           <div 
-            className="mb-3 relative group cursor-pointer overflow-hidden"
+            className="mb-0 relative group cursor-pointer overflow-hidden"
             onClick={() => fileInputRef.current?.click()}
             title="Clique para alterar o logo"
           >
