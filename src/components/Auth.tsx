@@ -82,10 +82,13 @@ export default function Auth() {
       {/* CARD LOGIN */}
       <form
         onSubmit={handleSubmit}
-        className="relative z-10 w-[420px] bg-white/10 backdrop-blur-md border border-white/20 p-10 rounded-xl shadow-2xl"
+        className="relative z-10 w-[420px] p-10"
       >
+        <div className="flex justify-center mb-6">
+          <img src="/Secontaf1.png" alt="Logo" className="w-48 h-auto object-contain" />
+        </div>
         <h1 className="text-center text-white text-2xl font-semibold mb-8">
-          {isLogin ? 'LOGIN' : 'CRIAR CONTA'}
+          {isLogin ? 'GESTÃO PORTARIA 360' : 'CRIAR CONTA'}
         </h1>
 
         {/* EMAIL */}

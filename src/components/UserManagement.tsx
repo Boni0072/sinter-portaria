@@ -165,6 +165,14 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
           });
         }
 
+        // Garante que a empresa do próprio usuário esteja na lista (para admins que não são donos)
+        if (userProfile.tenantId && !list.some(t => t.id === userProfile.tenantId)) {
+            const snap = await get(ref(database, `tenants/${userProfile.tenantId}`));
+            if (snap.exists()) {
+                list.push({ id: snap.key!, ...snap.val() });
+            }
+        }
+
         list.sort((a, b) => {
           if (a.type === 'matriz' && b.type !== 'matriz') return -1;
           if (a.type !== 'matriz' && b.type === 'matriz') return 1;
@@ -173,8 +181,14 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
 
         setTenants(list);
         
-        if (activeTenantId && list.some(t => t.id === activeTenantId)) {
-           setSelectedTenants(prev => prev.length === 0 ? [activeTenantId] : prev);
+        // Correção: Força a atualização da empresa selecionada quando o contexto muda
+        if (activeTenantId && activeTenantId !== 'all' && list.some(t => t.id === activeTenantId)) {
+           setSelectedTenants([activeTenantId]);
+        } else if ((!activeTenantId || activeTenantId === 'all') && userProfile?.tenantId && list.some(t => t.id === userProfile.tenantId)) {
+           // Se estiver vendo "Todas" ou indefinido, seleciona a empresa do administrador por padrão
+           setSelectedTenants([userProfile.tenantId]);
+        } else if (list.length > 0 && selectedTenants.length === 0) {
+           setSelectedTenants([list[0].id]);
         }
       } catch (e) {
         console.error("Erro ao buscar empresas:", e);

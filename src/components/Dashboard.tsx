@@ -153,17 +153,17 @@ export default function Dashboard() {
         });
       }
 
-      // Para não-admins, precisamos garantir que a própria empresa (myTenantId) esteja na lista
-      // já que a query acima buscou apenas os filhos (parentId)
-      if (userProfile?.role !== 'admin') {
-         get(ref(database, `tenants/${myTenantId}`)).then(snap => {
-            if (snap.exists() && !loadedTenants.find(t => t.id === myTenantId)) {
-               setAvailableTenants(prev => {
-                 if (prev.find(t => t.id === myTenantId)) return prev;
-                 return [{ id: snap.key!, name: snap.val().name, type: snap.val().type }, ...prev];
-               });
-            }
-         });
+      // Garante que a própria empresa (myTenantId) esteja na lista se não foi carregada pela query acima
+      // Isso é crucial para admins que não são donos (sub-admins) e para operadores/visualizadores
+      if (myTenantId && !loadedTenants.find(t => t.id === myTenantId)) {
+        get(ref(database, `tenants/${myTenantId}`)).then(snap => {
+          if (snap.exists()) {
+              setAvailableTenants(prev => {
+                if (prev.find(t => t.id === myTenantId)) return prev;
+                return [{ id: snap.key!, name: snap.val().name, type: snap.val().type }, ...prev];
+              });
+          }
+        });
       }
 
       // Filtragem de segurança extra (allowedTenants)
@@ -368,16 +368,16 @@ export default function Dashboard() {
       >
         <div className={`p-6 flex flex-col items-center border-b ${isSidebarCollapsed ? 'px-2' : ''}`} style={{ borderColor: 'rgba(255,255,255,0.1)' }}>
           <div 
-            className="bg-white/10 p-3 rounded-xl mb-3 shadow-lg backdrop-blur-sm relative group cursor-pointer overflow-hidden"
+            className="mb-3 relative group cursor-pointer overflow-hidden"
             onClick={() => fileInputRef.current?.click()}
             title="Clique para alterar o logo"
           >
-            {customLogo ? (
-              <img src={customLogo} alt="Logo" className={`${isSidebarCollapsed ? 'w-10 h-10' : 'w-20 h-20'} object-contain transition-all duration-300`} />
-            ) : (
-              <ClipboardList className={`${isSidebarCollapsed ? 'w-10 h-10' : 'w-20 h-20'} text-white transition-all duration-300`} />
+            {customLogo ? (              
+              <img src={customLogo} alt="Logo" className={`${isSidebarCollapsed ? 'w-[3.3rem] h-[3.3rem]' : 'w-[6.6rem] h-[6.6rem]'} object-contain transition-all duration-300`} />
+            ) : (              
+              <ClipboardList className={`${isSidebarCollapsed ? 'w-[3.3rem] h-[3.3rem]' : 'w-[6.6rem] h-[6.6rem]'} text-white transition-all duration-300`} />
             )}
-            <div className="absolute inset-0 bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity rounded-xl">
+            <div className="absolute inset-0 bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
               <Camera className="w-4 h-4 text-white" />
             </div>
             <input
