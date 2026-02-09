@@ -37,6 +37,7 @@ export default function Dashboard() {
   const [selectedTenantId, setSelectedTenantId] = useState<string>('');
   const [retryCount, setRetryCount] = useState(0);
   const database = getDatabase(auth.app);
+  const [tenantsLoading, setTenantsLoading] = useState(true);
 
   const [sidebarColor, setSidebarColor] = useState<string>('#122854');
 
@@ -129,6 +130,8 @@ export default function Dashboard() {
     const myTenantId = userProfile?.tenantId || user?.uid;
     if (!myTenantId) return;
 
+    setTenantsLoading(true);
+
     const tenantsRef = ref(database, 'tenants');
     let q;
 
@@ -140,7 +143,7 @@ export default function Dashboard() {
        q = query(tenantsRef, orderByChild('parentId'), equalTo(myTenantId));
     }
 
-    const unsubscribe = onValue(q, (snapshot) => {
+    const unsubscribe = onValue(q, async (snapshot) => {
       const loadedTenants: Tenant[] = [];
       
       if (snapshot.exists()) {
@@ -153,17 +156,37 @@ export default function Dashboard() {
         });
       }
 
+      // Lógica para buscar empresas permitidas explicitamente (allowedTenants)
+      // Isso corrige o problema de admins secundários que não são donos
+      // @ts-ignore
+      const allowedIds = userProfile.allowedTenants || [];
+      if (Array.isArray(allowedIds) && allowedIds.length > 0) {
+          try {
+            const promises = allowedIds.map((id: string) => get(ref(database, `tenants/${id}`)));
+            const snaps = await Promise.all(promises);
+            snaps.forEach(snap => {
+                if (snap.exists()) {
+                    if (!loadedTenants.find(t => t.id === snap.key)) {
+                        loadedTenants.push({ id: snap.key!, name: snap.val().name, type: snap.val().type });
+                    }
+                }
+            });
+          } catch (err) {
+              console.error("Erro ao buscar tenants permitidos:", err);
+          }
+      }
+
       // Garante que a própria empresa (myTenantId) esteja na lista se não foi carregada pela query acima
       // Isso é crucial para admins que não são donos (sub-admins) e para operadores/visualizadores
       if (myTenantId && !loadedTenants.find(t => t.id === myTenantId)) {
-        get(ref(database, `tenants/${myTenantId}`)).then(snap => {
-          if (snap.exists()) {
-              setAvailableTenants(prev => {
-                if (prev.find(t => t.id === myTenantId)) return prev;
-                return [{ id: snap.key!, name: snap.val().name, type: snap.val().type }, ...prev];
-              });
-          }
-        });
+        try {
+            const snap = await get(ref(database, `tenants/${myTenantId}`));
+            if (snap.exists()) {
+                loadedTenants.push({ id: snap.key!, name: snap.val().name, type: snap.val().type });
+            }
+        } catch (err) {
+            console.error("Erro ao buscar tenant principal:", err);
+        }
       }
 
       // Filtragem de segurança extra (allowedTenants)
@@ -171,10 +194,14 @@ export default function Dashboard() {
       // @ts-ignore
       if (userProfile?.allowedTenants && userProfile.allowedTenants.length > 0) {
          // @ts-ignore
-         finalTenants = finalTenants.filter(t => userProfile.allowedTenants.includes(t.id));
+         finalTenants = finalTenants.filter(t => userProfile.allowedTenants.includes(t.id) || t.id === myTenantId);
       }
 
+      // Remove duplicatas
+      finalTenants = finalTenants.filter((v,i,a)=>a.findIndex(t=>(t.id===v.id))===i);
+
       setAvailableTenants(finalTenants);
+      setTenantsLoading(false);
 
       // Seleção inicial estrita: Sempre seleciona a primeira empresa disponível se nenhuma estiver selecionada
       // Removemos a lógica de 'all' para garantir isolamento de contexto
@@ -315,7 +342,7 @@ export default function Dashboard() {
   if (!selectedTenantId || selectedTenantId === 'all') {
     // Se houver tenants disponíveis, o useEffect acima irá selecionar um.
     // Se não houver, o usuário não tem empresa vinculada.
-    if (availableTenants.length === 0 && !loading) {
+    if (availableTenants.length === 0 && !loading && !tenantsLoading) {
        return <div className="flex items-center justify-center h-screen">Você não está vinculado a nenhuma empresa. Contate o suporte.</div>;
     }
     return <div className="flex items-center justify-center h-screen"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-900"></div></div>;
@@ -366,16 +393,16 @@ export default function Dashboard() {
         } text-white transition-all duration-300 fixed h-full z-10 flex flex-col shadow-xl`}
         style={{ backgroundColor: sidebarColor }}
       >
-        <div className={`p-6 flex flex-col items-center border-b ${isSidebarCollapsed ? 'px-2' : ''}`} style={{ borderColor: 'rgba(255,255,255,0.1)' }}>
+        <div className={`p-4 flex flex-col items-center border-b ${isSidebarCollapsed ? 'px-2' : ''}`} style={{ borderColor: 'rgba(255,255,255,0.1)' }}>
           <div 
             className="mb-3 relative group cursor-pointer overflow-hidden"
             onClick={() => fileInputRef.current?.click()}
             title="Clique para alterar o logo"
           >
             {customLogo ? (              
-              <img src={customLogo} alt="Logo" className={`${isSidebarCollapsed ? 'w-[3.3rem] h-[3.3rem]' : 'w-[6.6rem] h-[6.6rem]'} object-contain transition-all duration-300`} />
+              <img src={customLogo} alt="Logo" className={`${isSidebarCollapsed ? 'w-[4.3rem] h-[4.3rem]' : 'w-[8.6rem] h-[8.6rem]'} object-contain transition-all duration-300`} />
             ) : (              
-              <ClipboardList className={`${isSidebarCollapsed ? 'w-[3.3rem] h-[3.3rem]' : 'w-[6.6rem] h-[6.6rem]'} text-white transition-all duration-300`} />
+              <ClipboardList className={`${isSidebarCollapsed ? 'w-[4.3rem] h-[4.3rem]' : 'w-[8.6rem] h-[8.6rem]'} text-white transition-all duration-300`} />
             )}
             <div className="absolute inset-0 bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
               <Camera className="w-4 h-4 text-white" />
@@ -437,7 +464,7 @@ export default function Dashboard() {
           )}
         </div>
 
-        <nav className="flex-1 px-4 py-6 space-y-2 overflow-y-auto">
+        <nav className="flex-1 px-4 py-2 space-y-2 overflow-y-auto">
           {canAccess('indicators') && (
           <button
             onClick={() => setCurrentView('indicators')}
