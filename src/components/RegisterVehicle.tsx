@@ -488,6 +488,7 @@ export default function RegisterVehicle({ onSuccess, tenantId: propTenantId }: P
                 <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Fotos</th>
                 <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Placa</th>
                 <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Modelo/Cor</th>
+                <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Companhia</th>
                 <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Motorista</th>
                 <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Ações</th>
               </tr>
@@ -499,7 +500,7 @@ export default function RegisterVehicle({ onSuccess, tenantId: propTenantId }: P
                     className="bg-gray-100 border-y border-gray-200 cursor-pointer hover:bg-gray-200 transition-colors"
                     onClick={() => toggleGroup(group.date)}
                   >
-                    <td colSpan={6} className="px-6 py-2 text-sm font-bold text-gray-700">
+                    <td colSpan={8} className="px-6 py-2 text-sm font-bold text-gray-700">
                       <div className="flex items-center">
                         {!expandedGroups.has(group.date) ? (
                           <ChevronRight className="w-4 h-4 mr-2" />
@@ -562,6 +563,9 @@ export default function RegisterVehicle({ onSuccess, tenantId: propTenantId }: P
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {vehicle.brand} {vehicle.model} <span className="text-gray-400 mx-1">•</span> {vehicle.color}
                       </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {vehicle.company || '---'}
+                      </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center">
                             {driver?.photo_url ? (
@@ -589,7 +593,7 @@ export default function RegisterVehicle({ onSuccess, tenantId: propTenantId }: P
               ))}
               {vehicles.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-6 py-8 text-center text-sm text-gray-500">
+                  <td colSpan={8} className="px-6 py-8 text-center text-sm text-gray-500">
                     Nenhum vehículo registrado nesta empresa.
                   </td>
                 </tr>

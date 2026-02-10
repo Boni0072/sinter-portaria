@@ -205,8 +205,8 @@ export default function Dashboard() {
 
       // Seleção inicial estrita: Sempre seleciona a primeira empresa disponível se nenhuma estiver selecionada
       // Removemos a lógica de 'all' para garantir isolamento de contexto
-      if ((!selectedTenantId || selectedTenantId === 'all') && finalTenants.length > 0) {
-         setSelectedTenantId(finalTenants[0].id);
+      if (!selectedTenantId && finalTenants.length > 0) {
+         setSelectedTenantId(finalTenants.length > 1 ? 'all' : finalTenants[0].id);
       }
     });
 
@@ -660,24 +660,6 @@ export default function Dashboard() {
               >
                 <Menu className="w-6 h-6" />
               </button>
-
-              {availableTenants.length > 0 && (
-                <div className="hidden md:flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded-lg border border-gray-200">
-                  <Building2 className="w-4 h-4 text-gray-500" />
-                  <select
-                    value={selectedTenantId}
-                    onChange={(e) => setSelectedTenantId(e.target.value)}
-                    className="bg-transparent border-none text-sm font-medium text-gray-700 focus:ring-0 cursor-pointer outline-none min-w-[150px]"
-                    disabled={availableTenants.length === 1}
-                  >
-                    {availableTenants.map(tenant => (
-                      <option key={tenant.id} value={tenant.id}>
-                        {tenant.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
             </div>
 
             <div className="flex items-center gap-4">

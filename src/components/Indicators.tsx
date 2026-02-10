@@ -56,6 +56,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
   const [selectedTenantId, setSelectedTenantId] = useState<string>('');
   const [companyStats, setCompanyStats] = useState<{id: string, name: string, count: number, occurrencesCount: number, concludedOccurrences: number}[]>([]);
   const [selectedCompanyDetails, setSelectedCompanyDetails] = useState<{name: string, type: 'entries' | 'occurrences' | 'drivers', data: any[]} | null>(null);
+  const [carrierStats, setCarrierStats] = useState<{name: string, count: number}[]>([]);
   const [error, setError] = useState<any>(null);
   const [allData, setAllData] = useState<AllData>({ entries: {}, occurrences: {}, drivers: {} });
   const [vehiclesInsideData, setVehiclesInsideData] = useState<Record<string, any[]>>({});
@@ -94,8 +95,9 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
       
       try {
         const allowedTenants = (userProfile as any)?.allowedTenants;
-        let list: {id: string, name: string, address?: string}[] = [];
+        let list: {id: string, name: string, address?: string, parkingSpots?: number}[] = [];
 
+        // 1. Busca tenants permitidos explicitamente
         if (allowedTenants && Array.isArray(allowedTenants) && allowedTenants.length > 0) {
           const promises = allowedTenants.map(id => get(ref(database, `tenants/${id}`)));
           const snapshots = await Promise.all(promises);
@@ -110,12 +112,42 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
               });
             }
           });
-        } else if (userProfile?.role === 'admin') {
-           // Se for admin, busca todas as empresas que ele é dono
-           const q = query(ref(database, 'tenants'), orderByChild('owner_id'), equalTo(user.uid));
-           const snapshot = await get(q);
-           if (snapshot.exists()) {
-             snapshot.forEach(child => {
+        }
+
+        // 2. Busca a própria empresa do usuário (Matriz ou Filial)
+        const myTenantId = (userProfile as any)?.tenantId || user.uid;
+        if (myTenantId) {
+            const myTenantSnap = await get(ref(database, `tenants/${myTenantId}`));
+            if (myTenantSnap.exists()) {
+                list.push({
+                    id: myTenantSnap.key!,
+                    name: myTenantSnap.val().name || 'Minha Empresa',
+                    address: myTenantSnap.val().address,
+                    parkingSpots: myTenantSnap.val().parkingSpots
+                });
+            }
+
+            // 3. Busca filiais vinculadas à empresa do usuário (caso seja Matriz)
+            const qChildren = query(ref(database, 'tenants'), orderByChild('parentId'), equalTo(myTenantId));
+            const snapshotChildren = await get(qChildren);
+            if (snapshotChildren.exists()) {
+                snapshotChildren.forEach(child => {
+                    list.push({
+                        id: child.key!,
+                        name: child.val().name || 'Filial',
+                        address: child.val().address,
+                        parkingSpots: child.val().parkingSpots
+                    });
+                });
+            }
+        }
+
+        // 4. Se for admin, busca todas as empresas que ele é dono (garantia extra)
+        if (userProfile?.role === 'admin') {
+           const qOwner = query(ref(database, 'tenants'), orderByChild('owner_id'), equalTo(user.uid));
+           const snapshotOwner = await get(qOwner);
+           if (snapshotOwner.exists()) {
+             snapshotOwner.forEach(child => {
                list.push({
                  id: child.key!,
                  name: child.val().name || 'Empresa sem nome',
@@ -124,50 +156,6 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                });
              });
            }
-        } else {
-          // Lógica hierárquica: Matriz + Filiais (igual ao Dashboard)
-          const myTenantId = (userProfile as any)?.tenantId || user.uid;
-          
-          // 1. Busca a própria empresa (Matriz ou Filial)
-          const myTenantSnap = await get(ref(database, `tenants/${myTenantId}`));
-          if (myTenantSnap.exists()) {
-             list.push({
-               id: myTenantSnap.key!,
-               name: myTenantSnap.val().name || 'Minha Empresa',
-               address: myTenantSnap.val().address,
-               parkingSpots: myTenantSnap.val().parkingSpots
-             });
-
-             // 2. Busca filiais vinculadas
-             const q = query(ref(database, 'tenants'), orderByChild('parentId'), equalTo(myTenantId));
-             const snapshot = await get(q);
-             if (snapshot.exists()) {
-               snapshot.forEach(child => {
-                 list.push({
-                   id: child.key!,
-                   name: child.val().name || 'Filial',
-                   address: child.val().address,
-                   parkingSpots: child.val().parkingSpots
-                 });
-               });
-             }
-          }
-          
-          // Fallback: Se não achou nada, tenta por created_by (legado)
-          if (list.length === 0) {
-             const q = query(ref(database, 'tenants'), orderByChild('owner_id'), equalTo(user.uid));
-             const snapshot = await get(q);
-             if (snapshot.exists()) {
-               snapshot.forEach(child => {
-                 list.push({
-                   id: child.key!,
-                   name: child.val().name || 'Empresa sem nome',
-                   address: child.val().address,
-                   parkingSpots: child.val().parkingSpots
-                 });
-               });
-             }
-          }
         }
 
         list = list.filter((v, i, a) => a.findIndex(t => t.id === v.id) === i);
@@ -461,18 +449,25 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
     let concludedOccurrencesCount = 0;
 
     const driverStats: Record<string, { count: number, photo_url?: string }> = {};
+    const carrierStatsMap: Record<string, number> = {};
     
     entries.forEach((entry: any) => {
+      let duration = 0;
+
       if (!entry.exit_time) {
         insideCount++;
+        const start = new Date(entry.entry_time).getTime();
+        const end = new Date().getTime();
+        duration = (end - start) / (1000 * 60);
       } else {
         const start = new Date(entry.entry_time).getTime();
         const end = new Date(entry.exit_time).getTime();
-        const duration = (end - start) / (1000 * 60);
-        if (duration > 0 && duration < 1440) {
-          totalDurationMinutes += duration;
-          completedVisits++;
-        }
+        duration = (end - start) / (1000 * 60);
+      }
+
+      if (duration > 0 && duration < 1440) {
+        totalDurationMinutes += duration;
+        completedVisits++;
       }
 
       if (entry.entry_time >= todayStart) todayCount++;
@@ -500,6 +495,9 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
              driverStats[driverName].photo_url = entry.cached_data.driver_photo_url;
         }
       }
+
+      const carrier = entry.cached_data?.vehicle_company || 'Particular';
+      carrierStatsMap[carrier] = (carrierStatsMap[carrier] || 0) + 1;
     });
 
     occurrences.forEach((occ: any) => {
@@ -532,6 +530,11 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
 
+    const sortedCarriers = Object.entries(carrierStatsMap)
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
     setMetrics({
       vehiclesInside: currentVehiclesInside.length,
       entriesToday: todayCount,
@@ -550,6 +553,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
     setOccurrencesDailyDistribution(occurrencesDaysCount);
     setDailyOccurrencesStats(occurrencesDaysBreakdown);
     setTopDrivers(sortedDrivers);
+    setCarrierStats(sortedCarriers);
     // Company Stats
     if (tenants.length > 1) {
         const stats = tenants.map(t => {
@@ -698,8 +702,8 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
             type = 'entries';
             break;
         case 'avgStayDuration':
-            data = entries.filter(e => e.exit_time).sort((a, b) => new Date(b.entry_time).getTime() - new Date(a.entry_time).getTime());
-            title = 'Visitas Concluídas (Histórico)';
+            data = entries.sort((a, b) => new Date(b.entry_time).getTime() - new Date(a.entry_time).getTime());
+            title = 'Tempo de Permanência (Todos os Veículos)';
             type = 'entries';
             break;
         case 'totalDrivers':
@@ -1550,7 +1554,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
         {/* Coluna Principal (Esquerda) */}
         <div className="xl:col-span-9 space-y-6">
           {/* Cards Principais */}
-          <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-5 gap-4">
             <div 
               className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm cursor-pointer hover:shadow-md transition-all hover:-translate-y-1"
               onClick={() => handleCardClick('vehiclesInside')}
@@ -1602,7 +1606,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
             <div 
               className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm cursor-pointer hover:shadow-md transition-all hover:-translate-y-1"
               onClick={() => handleCardClick('avgStayDuration')}
-              title={`Cálculo: Soma das durações das visitas dividido por ${metrics.completedVisits} visitas concluídas.`}
+              title={`Cálculo: Média de tempo de permanência de ${metrics.completedVisits} veículos (incluindo em pátio).`}
             >
               <div className="flex justify-between items-start">
                 <div>
@@ -1615,23 +1619,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                   <Clock className="w-5 h-5 text-purple-600" />
                 </div>
               </div>
-              <div className="mt-2 text-sm text-gray-500">Baseado em {metrics.completedVisits} visitas</div>
-            </div>
-
-            <div 
-              className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm cursor-pointer hover:shadow-md transition-all hover:-translate-y-1"
-              onClick={() => handleCardClick('totalDrivers')}
-            >
-              <div className="flex justify-between items-start">
-                <div>
-                  <p className="text-base font-medium text-gray-500">Total Motoristas</p>
-                  <h3 className="text-3xl font-bold text-orange-600 mt-2">{metrics.totalDrivers}</h3>
-                </div>
-                <div className="p-2 bg-orange-50 rounded-lg">
-                  <Users className="w-5 h-5 text-orange-600" />
-                </div>
-              </div>
-              <div className="mt-2 text-sm text-gray-500">Cadastrados na base</div>
+              <div className="mt-2 text-sm text-gray-500">Baseado em {metrics.completedVisits} veículos</div>
             </div>
 
             <div 
@@ -1918,22 +1906,22 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
           {/* Gráfico de Distribuição Diária */}
           <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
               <div className="flex justify-between items-start mb-6">
-                  <h3 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                  <h3 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
                     <Calendar className="w-5 h-5 text-gray-500" /> Distribuição Diária
                   </h3>
                   <div className="flex flex-col items-end">
                     <div className="flex gap-4 mb-1">
-                        <span className="text-sm font-bold text-gray-400">Total: <span className="text-blue-600">{dailyDistribution.reduce((a, b) => a + b, 0)}</span></span>
-                        <span className="text-sm font-bold text-gray-400">Total: <span className="text-red-600">{occurrencesDailyDistribution.reduce((a, b) => a + b, 0)}</span></span>
+                        <span className="text-lg font-bold text-gray-400">Total: <span className="text-blue-600">{dailyDistribution.reduce((a, b) => a + b, 0)}</span></span>
+                        <span className="text-lg font-bold text-gray-400">Total: <span className="text-red-600">{occurrencesDailyDistribution.reduce((a, b) => a + b, 0)}</span></span>
                     </div>
                     <div className="flex items-center justify-end gap-4">
                     <div className="flex items-center gap-2">
                       <div className="w-3 h-3 rounded-sm bg-blue-600"></div>
-                      <span className="text-sm text-gray-600">Entradas</span>
+                      <span className="text-base text-gray-600">Entradas</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-3 h-3 rounded-sm bg-red-500"></div>
-                      <span className="text-sm text-gray-600">Ocorrências</span>
+                      <span className="text-base text-gray-600">Ocorrências</span>
                     </div>
                     </div>
                   </div>
@@ -1950,10 +1938,10 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                     <div key={index} className="flex-1 flex flex-col items-center justify-end h-full min-w-[40px] group">
                       <div className="flex items-end justify-center gap-1 w-full h-full px-1">
                            <div className="w-full bg-blue-600 rounded-t-sm transition-all duration-500 relative group/bar" style={{ height: `${(count / max) * 100}%` }} title={`Entradas: ${count}`}>
-                              <span className="absolute -top-4 left-1/2 -translate-x-1/2 text-sm font-bold text-blue-600">{count > 0 ? count : ''}</span>
+                              <span className="absolute -top-6 left-1/2 -translate-x-1/2 text-lg font-bold text-blue-600">{count > 0 ? count : ''}</span>
                            </div>
                            <div className="w-full rounded-t-sm transition-all duration-500 relative flex flex-col justify-end overflow-hidden group/bar" style={{ height: `${(occCount / max) * 100}%` }} title={`Ocorrências: ${occCount} (Concluídas: ${occStats.concluded}, Pendentes: ${occStats.pending})`}>
-                              <span className="absolute -top-4 left-1/2 -translate-x-1/2 text-sm font-bold text-red-600">{occCount > 0 ? occCount : ''}</span>
+                              <span className="absolute -top-6 left-1/2 -translate-x-1/2 text-lg font-bold text-red-600">{occCount > 0 ? occCount : ''}</span>
                               {occStats.pending > 0 && (
                                   <div style={{ height: `${(occStats.pending / occCount) * 100}%` }} className="w-full bg-red-500 flex items-center justify-center">
                                       <span className="text-[10px] font-bold text-white">{occStats.pending}</span>
@@ -1966,7 +1954,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                               )}
                            </div>
                       </div>
-                      <div className="mt-2 text-sm text-gray-500 text-center whitespace-nowrap">
+                      <div className="mt-2 text-base text-gray-500 text-center whitespace-nowrap">
                         {date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}
                       </div>
                     </div>
@@ -1979,26 +1967,26 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
           {tenants.length > 1 && (
             <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
               <div className="flex justify-between items-start mb-6">
-                  <h3 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                  <h3 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
                     <BarChart3 className="w-5 h-5 text-gray-500" /> Comparativo de Registros por Empresa
                   </h3>
                   <div className="flex flex-col items-end">
                      <div className="flex gap-4 mb-1">
-                          <span className="text-sm font-bold text-gray-400">Total: <span className="text-blue-600">{companyStats.reduce((acc, curr) => acc + curr.count, 0)}</span></span>
-                          <span className="text-sm font-bold text-gray-400">Total: <span className="text-red-600">{companyStats.reduce((acc, curr) => acc + curr.occurrencesCount, 0)}</span></span>
+                          <span className="text-lg font-bold text-gray-400">Total: <span className="text-blue-600">{companyStats.reduce((acc, curr) => acc + curr.count, 0)}</span></span>
+                          <span className="text-lg font-bold text-gray-400">Total: <span className="text-red-600">{companyStats.reduce((acc, curr) => acc + curr.occurrencesCount, 0)}</span></span>
                      </div>
                     <div className="flex items-center justify-end gap-4">
                         <div className="flex items-center gap-2">
                           <div className="w-3 h-3 rounded-sm bg-blue-600"></div>
-                          <span className="text-sm text-gray-600">Entradas</span>
+                          <span className="text-base text-gray-600">Entradas</span>
                         </div>
                         <div className="flex items-center gap-2">
                           <div className="w-3 h-3 rounded-sm bg-green-500"></div>
-                          <span className="text-sm text-gray-600">Ocorr. Concluídas</span>
+                          <span className="text-base text-gray-600">Ocorr. Concluídas</span>
                         </div>
                         <div className="flex items-center gap-2">
                           <div className="w-3 h-3 rounded-sm bg-red-500"></div>
-                          <span className="text-sm text-gray-600">Ocorr. Pendentes</span>
+                          <span className="text-base text-gray-600">Ocorr. Pendentes</span>
                         </div>
                     </div>
                   </div>
@@ -2017,7 +2005,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                              onClick={() => handleBarClick(stat.id, stat.name, 'entries')}
                              title={`Ver detalhes de Entradas: ${stat.count}`}
                            >
-                               <span className="mb-1 text-sm font-bold text-blue-600">{stat.count > 0 ? stat.count : ''}</span>
+                               <span className="mb-1 text-lg font-bold text-blue-600">{stat.count > 0 ? stat.count : ''}</span>
                                <div 
                                  className="w-full bg-blue-600 rounded-t-sm transition-all duration-500 relative" 
                                  style={{ height: `${(stat.count / max) * 100}%` }}
@@ -2028,7 +2016,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                              onClick={() => handleBarClick(stat.id, stat.name, 'occurrences')}
                              title={`Ocorrências: ${stat.occurrencesCount} (Concluídas: ${stat.concludedOccurrences}, Pendentes: ${pendingCount})`}
                            >
-                               <span className={`mb-1 text-sm font-bold ${occurrenceTextColor}`}>{stat.occurrencesCount > 0 ? stat.occurrencesCount : ''}</span>
+                               <span className={`mb-1 text-lg font-bold ${occurrenceTextColor}`}>{stat.occurrencesCount > 0 ? stat.occurrencesCount : ''}</span>
                                <div 
                                  className="w-full rounded-t-sm transition-all duration-500 relative flex flex-col justify-end overflow-hidden" 
                                  style={{ height: `${(stat.occurrencesCount / max) * 100}%` }}
@@ -2046,7 +2034,7 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
                                </div>
                            </div>
                       </div>
-                      <div className="mt-2 text-sm text-gray-500 truncate w-full text-center" title={stat.name}>
+                      <div className="mt-2 text-base text-gray-500 truncate w-full text-center" title={stat.name}>
                         {stat.name}
                       </div>
                     </div>
@@ -2055,6 +2043,44 @@ export default function Indicators({ tenantId: propTenantId }: { tenantId?: stri
               </div>
             </div>
           )}
+
+          {/* Gráfico de Entradas por Transportadora */}
+          <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
+              <div className="flex justify-between items-start mb-6">
+                  <h3 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
+                    <Truck className="w-5 h-5 text-gray-500" /> Entradas por Transportadora
+                  </h3>
+              </div>
+              <div className="h-32 flex items-end gap-2 sm:gap-4 pt-4 border-b border-gray-100 overflow-x-auto pb-2 custom-scrollbar">
+                {carrierStats.map((stat) => {
+                  const max = Math.max(...carrierStats.map(s => s.count), 1);
+                  return (
+                    <div key={stat.name} className="flex-1 flex flex-col items-center justify-end h-full group min-w-[80px]">
+                      <div className="flex items-end justify-center gap-1 w-full h-full">
+                           <div 
+                             className="flex flex-col items-center justify-end h-full w-full group/bar cursor-pointer transition-opacity hover:opacity-80"
+                             title={`Transportadora: ${stat.name} - Entradas: ${stat.count}`}
+                           >
+                               <span className="mb-1 text-lg font-bold text-blue-600">{stat.count}</span>
+                               <div 
+                                 className="w-full bg-blue-600 rounded-t-sm transition-all duration-500 relative" 
+                                 style={{ height: `${(stat.count / max) * 100}%` }}
+                               ></div>
+                           </div>
+                      </div>
+                      <div className="mt-2 text-sm text-gray-500 truncate w-full text-center" title={stat.name}>
+                        {stat.name}
+                      </div>
+                    </div>
+                  );
+                })}
+                {carrierStats.length === 0 && (
+                    <div className="w-full text-center text-gray-400 py-8 flex items-center justify-center h-full">
+                        Nenhum dado disponível no período.
+                    </div>
+                )}
+              </div>
+          </div>
         </div>
 
         {/* Coluna Lateral (Direita) - Análise de Permanência */}

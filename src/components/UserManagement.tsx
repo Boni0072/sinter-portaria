@@ -4,7 +4,7 @@ import { getDatabase, ref, get, set, update, remove, onValue, query, orderByChil
 import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { useAuth } from '../contexts/AuthContext';
-import { Shield, Calendar, Edit2, X, UserPlus, Save, Eye, EyeOff, ChevronDown, Building2, User, Trash2, Search } from 'lucide-react';
+import { Shield, Calendar, Edit2, X, UserPlus, Save, Eye, EyeOff, ChevronDown, Building2, User, Trash2 } from 'lucide-react';
 
 const ITEMS_PER_PAGE = 10;
 
@@ -41,7 +41,6 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
   const [newRole, setNewRole] = useState('viewer');
   const [showPassword, setShowPassword] = useState(false);
   const [tenants, setTenants] = useState<{id: string, name: string, type?: string, parentId?: string}[]>([]);
-  const [searchTerm, setSearchTerm] = useState('');
   
   // Novos estados para permissões
   const [selectedTenants, setSelectedTenants] = useState<string[]>([]);
@@ -120,15 +119,6 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
         }
 
         let allUsers = Array.from(allUsersMap.values());
-
-        if (searchTerm) {
-          const lower = searchTerm.toLowerCase();
-          allUsers = allUsers.filter(u => 
-            ((u as any).name || '').toLowerCase().includes(lower) || 
-            (u.email || '').toLowerCase().includes(lower) || 
-            ((u as any).login || '').toLowerCase().includes(lower)
-          );
-        }
 
         allUsers.sort((a, b) => {
           const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
@@ -212,15 +202,6 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
 
         let allUsers = Array.from(allUsersMap.values());
 
-        if (searchTerm) {
-          const lower = searchTerm.toLowerCase();
-          allUsers = allUsers.filter(u => 
-            ((u as any).name || '').toLowerCase().includes(lower) || 
-            (u.email || '').toLowerCase().includes(lower) || 
-            ((u as any).login || '').toLowerCase().includes(lower)
-          );
-        }
-
         allUsers.sort((a, b) => {
           const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
           const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
@@ -240,7 +221,7 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
 
     fetchAllTenantUsers();
     return () => {}; // Nenhuma inscrição para limpar neste caminho
-  }, [userProfile, activeTenantId, tenants, limitCount, searchTerm]);
+  }, [userProfile, activeTenantId, tenants, limitCount]);
 
   useEffect(() => {
     setLimitCount(ITEMS_PER_PAGE);
@@ -353,6 +334,18 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
     }
     
     setSelectedTenants(newSelected);
+  };
+
+  const handleRoleChange = (role: string) => {
+    setNewRole(role);
+    
+    if (role === 'admin') {
+      setSelectedPages(AVAILABLE_PAGES.map(p => p.id));
+    } else if (role === 'operator') {
+      setSelectedPages(['indicators', 'register-entry', 'entries', 'register-driver', 'register-occurrence', 'drivers', 'register-vehicle']);
+    } else {
+      setSelectedPages(['indicators', 'entries']);
+    }
   };
 
   const handleEdit = (user: UserProfile) => {
@@ -588,10 +581,11 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
             </div>
             <div>
               <h3 className="font-bold text-green-900">Operador</h3>
-              <p className="text-xs text-green-700">Operação Diária</p>
+              <p className="text-xs text-green-700">Operação Diária Paginas -  Indicadores, Registrar Entrada, Ver Registros, Cadastrar Motorista, Registrar Ocorrência, Ver Motoristas, Cadastrar Veículo</p>
             </div>
           </div>
           <p className="text-sm text-green-800 mb-3">Pode registrar entradas, saídas e cadastros. Não gerencia usuários.</p>
+          
         </div>
 
         <div className="bg-gray-50 border border-gray-200 p-4 rounded-xl">
@@ -601,7 +595,7 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
             </div>
             <div>
               <h3 className="font-bold text-gray-900">Visualizador</h3>
-              <p className="text-xs text-gray-700">Apenas Leitura</p>
+              <p className="text-xs text-gray-700">Apenas Leitura das Paginas - Indicadores e Registros</p>
             </div>
           </div>
           <p className="text-sm text-gray-800 mb-3">Pode apenas visualizar os registros e relatórios. Não faz alterações.</p>
@@ -616,20 +610,6 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
           {isRegistering ? <X className="w-4 h-4" /> : <UserPlus className="w-4 h-4" />}
           <span>{isRegistering ? 'Cancelar Cadastro' : 'Novo Usuário'}</span>
         </button>
-      </div>
-
-      {/* Barra de Busca */}
-      <div className="mb-6 relative">
-        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-          <Search className="h-5 w-5 text-gray-400" />
-        </div>
-        <input
-          type="text"
-          placeholder="Buscar usuário por nome, login ou e-mail..."
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-        />
       </div>
 
       {error && (
@@ -777,7 +757,7 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
                 <label className="block text-sm font-medium text-gray-700 mb-1">Perfil de Acesso</label>
                 <select
                   value={newRole}
-                  onChange={(e) => setNewRole(e.target.value)}
+                  onChange={(e) => handleRoleChange(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="viewer">Visualizador (Apenas vê registros)</option>
@@ -964,7 +944,7 @@ export default function UserManagement({ tenantId: propTenantId }: Props) {
                 <label className="block text-sm font-medium text-gray-700 mb-1">Perfil de Acesso</label>
                 <select
                   value={newRole}
-                  onChange={(e) => setNewRole(e.target.value)}
+                  onChange={(e) => handleRoleChange(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg"
                 >
                   <option value="viewer">Visualizador</option>

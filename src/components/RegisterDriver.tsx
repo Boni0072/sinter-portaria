@@ -22,7 +22,9 @@ export default function RegisterDriver({ onSuccess, tenantId: propTenantId }: Pr
   const [error, setError] = useState('');
 
   const database = getDatabase(auth.app);
-  const activeTenantId = propTenantId || (userProfile as any)?.tenantId || user?.uid;
+  
+  const rawTenantId = propTenantId || (userProfile as any)?.tenantId || user?.uid;
+  const activeTenantId = rawTenantId === 'all' ? ((userProfile as any)?.tenantId || user?.uid) : rawTenantId;
 
   const formatCPF = (value: string) => {
     return value

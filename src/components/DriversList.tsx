@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { auth, Driver } from './firebase';
 import { getDatabase, ref, remove, update, onValue } from 'firebase/database';
 import { useAuth } from '../contexts/AuthContext';
-import { User, Phone, FileText, Maximize2, X, Edit2, Trash2, Save } from 'lucide-react';
+import { User, X, Edit2, Trash2, Save } from 'lucide-react';
 
 interface Props {
   tenantId?: string;
@@ -109,91 +109,76 @@ export default function DriversList({ tenantId: propTenantId }: Props) {
     <div>
       <h2 className="text-2xl font-bold text-gray-800 mb-6">Motoristas Cadastrados</h2>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {drivers.map((driver) => (
-          <div
-            key={driver.id}
-            className="bg-gradient-to-br from-white to-gray-50 border border-gray-200 rounded-xl p-6 hover:shadow-lg transition relative group"
-          >
-            <div className="flex items-start justify-between space-x-6 w-full">
-              {/* Foto */}
-              <div className="flex-shrink-0">
-                {driver.photo_url ? (
-                  <button 
-                    onClick={() => setZoomedImage(driver.photo_url!)}
-                    className="relative group cursor-zoom-in focus:outline-none"
-                    title="Ampliar foto"
-                  >
+      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
+        <table className="min-w-full divide-y divide-gray-200">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Foto</th>
+              <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Nome</th>
+              <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Documento</th>
+              <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Telefone</th>
+              <th className="px-6 py-3 text-left text-xs font-bold text-blue-500 uppercase tracking-wider">Assinatura</th>
+              {canManage && <th className="px-6 py-3 text-right text-xs font-bold text-blue-500 uppercase tracking-wider">Ações</th>}
+            </tr>
+          </thead>
+          <tbody className="bg-white divide-y divide-gray-200">
+            {drivers.map((driver) => (
+              <tr key={driver.id} className="hover:bg-gray-50">
+                <td className="px-6 py-4 whitespace-nowrap">
+                  {driver.photo_url ? (
                     <img 
                       src={driver.photo_url} 
                       alt={driver.name} 
-                      className="w-32 h-32 rounded-lg object-cover border-4 border-blue-100 group-hover:border-blue-400 transition-colors"
+                      className="w-10 h-10 rounded-full object-cover border border-gray-200 cursor-pointer hover:scale-110 transition-transform"
+                      onClick={() => setZoomedImage(driver.photo_url!)}
                     />
-                  </button>
-                ) : (
-                  <div className="bg-blue-100 p-4 rounded-lg flex items-center justify-center w-32 h-32">
-                    <User className="w-16 h-16 text-blue-600" />
-                  </div>
-                )}
-              </div>
-              
-              {/* Infos e Assinatura */}
-              <div className="flex-grow flex items-start justify-between">
-                {/* Informações */}
-                <div className="flex flex-col justify-center h-32">
-                  <p className="font-bold text-xl text-gray-800">{driver.name}</p>
-                  <div className="mt-2 space-y-1">
-                    <div className="flex items-center text-sm text-gray-600">
-                      <FileText className="w-4 h-4 mr-2 flex-shrink-0 text-gray-500" />
-                      <span>{driver.document}</span>
+                  ) : (
+                    <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center border border-gray-200 text-gray-400">
+                      <User className="w-5 h-5" />
                     </div>
-                    {driver.phone && (
-                      <div className="flex items-center text-sm text-gray-600">
-                        <Phone className="w-4 h-4 mr-2 flex-shrink-0 text-gray-500" />
-                        <span>{driver.phone}</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Assinatura */}
-                {driver.signature_url && (
-                  <div className="flex-shrink-0">
-                      <p className="text-xs text-gray-500 mb-1 text-center">Assinatura:</p>
-                      <div 
-                        className="relative group cursor-zoom-in"
-                        onClick={() => setZoomedImage(driver.signature_url!)}
-                        title="Ampliar assinatura"
-                      >
-                        <img
-                          src={driver.signature_url}
-                          alt="Assinatura"
-                          className="w-40 h-24 object-contain bg-gray-50 border border-gray-200 rounded group-hover:border-blue-300 transition-colors"
-                        />
-                        <div className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/5 transition-colors rounded pointer-events-none">
-                          <Maximize2 className="w-5 h-5 text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity" />
-                        </div>
-                      </div>
-                  </div>
+                  )}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                  {driver.name}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                  {driver.document}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                  {driver.phone || '-'}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap">
+                  {driver.signature_url ? (
+                    <div 
+                      className="h-8 w-20 bg-white border border-gray-200 rounded cursor-zoom-in hover:border-blue-400 transition-colors"
+                      onClick={() => setZoomedImage(driver.signature_url!)}
+                    >
+                      <img 
+                        src={driver.signature_url} 
+                        alt="Assinatura" 
+                        className="w-full h-full object-contain"
+                      />
+                    </div>
+                  ) : (
+                    <span className="text-xs text-gray-400">---</span>
+                  )}
+                </td>
+                {canManage && (
+                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                    <div className="flex items-center justify-end space-x-2">
+                      <button onClick={() => handleEditClick(driver)} className="p-2 text-blue-600 hover:bg-blue-50 rounded-full transition-colors" title="Editar">
+                        <Edit2 className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => handleDelete(driver.id)} className="p-2 text-red-600 hover:bg-red-50 rounded-full transition-colors" title="Excluir">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </td>
                 )}
-              </div>
-            </div>
-
-            {/* Botões de Ação */}
-            <div className="absolute top-4 right-4 flex items-center space-x-1 bg-white/50 backdrop-blur-sm p-1 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-              {canManage && (
-                <>
-                  <button onClick={() => handleEditClick(driver)} className="p-2 text-blue-600 hover:bg-blue-100 rounded-lg transition" title="Editar">
-                    <Edit2 className="w-4 h-4" />
-                  </button>
-                  <button onClick={() => handleDelete(driver.id)} className="p-2 text-red-600 hover:bg-red-100 rounded-lg transition" title="Excluir">
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-        ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
 
       {zoomedImage && (

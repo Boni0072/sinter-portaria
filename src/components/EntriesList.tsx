@@ -454,10 +454,11 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
     if (entries.length === 0) return;
 
     const csvContent = [
-      ['Empresa', 'Placa', 'Marca', 'Modelo', 'Cor', 'Observação', 'Motorista', 'Documento', 'Usuário', 'Entrada', 'Pesagem Entrada', 'Cód. Material', 'Qtd.', 'Nota Fiscal', 'Saída', 'Pesagem Saída', 'Local', 'Endereço'],
+      ['Empresa', 'Placa', 'Transportadora', 'Marca', 'Modelo', 'Cor', 'Observação', 'Motorista', 'Documento', 'Usuário', 'Entrada', 'Pesagem Entrada', 'Cód. Material', 'Qtd.', 'Nota Fiscal', 'Saída', 'Pesagem Saída', 'Local', 'Endereço'],
       ...entries.map(entry => [
         entry.tenant_name || '---',
         entry.vehicle.plate,
+        entry.vehicle.company || '---',
         entry.vehicle.brand,
         entry.vehicle.model,
         entry.vehicle.color,
@@ -838,18 +839,19 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Empresa</th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Placa</th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Observação</th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Motorista</th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Usuário</th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Entrada</th>
-                <th scope="col" className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Pesagem Ent.</th>
-                <th scope="col" className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Pesagem Sai.</th>
-                <th scope="col" className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Local</th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Localização (Endereço)</th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Evidências</th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Ações</th>
+                <th scope="col" className="px-6 py-3 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Empresa</th>
+                <th scope="col" className="px-6 py-3 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Placa</th>
+                <th scope="col" className="px-6 py-3 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Transportadora</th>
+                <th scope="col" className="px-6 py-3 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Observação</th>
+                <th scope="col" className="px-6 py-3 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Motorista</th>
+                <th scope="col" className="px-6 py-3 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Usuário</th>
+                <th scope="col" className="px-6 py-3 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Entrada</th>
+                <th scope="col" className="px-6 py-3 text-center text-sm font-medium text-gray-500 uppercase tracking-wider">Pesagem Ent.</th>
+                <th scope="col" className="px-6 py-3 text-center text-sm font-medium text-gray-500 uppercase tracking-wider">Pesagem Sai.</th>
+                <th scope="col" className="px-6 py-3 text-center text-sm font-medium text-gray-500 uppercase tracking-wider">Local</th>
+                <th scope="col" className="px-6 py-3 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Localização (Endereço)</th>
+                <th scope="col" className="px-6 py-3 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Evidências</th>
+                <th scope="col" className="px-6 py-3 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Ações</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
@@ -859,7 +861,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
                     className="bg-gray-100 border-y border-gray-200 cursor-pointer hover:bg-gray-200 transition-colors"
                     onClick={() => toggleGroup(group.date)}
                   >
-                    <td colSpan={11} className="px-6 py-2 text-sm font-bold text-gray-700">
+                    <td colSpan={13} className="px-6 py-2 text-base font-bold text-gray-700">
                       <div className="flex items-center">
                         {!expandedGroups.has(group.date) ? (
                           <ChevronRight className="w-4 h-4 mr-2" />
@@ -870,7 +872,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
                         <span className="ml-2 font-normal text-gray-500">
                           - {group.weekday}
                         </span>
-                        <span className="ml-2 text-xs font-normal text-gray-500">
+                        <span className="ml-2 text-sm font-normal text-gray-500">
                           ({group.items.length})
                         </span>
                       </div>
@@ -883,18 +885,21 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
                   onClick={() => setViewEntry(entry)}
                 >
                   <td className="px-6 py-2 whitespace-nowrap">
-                    <span className="text-sm font-medium text-gray-900">{entry.tenant_name}</span>
+                    <span className="text-base font-medium text-gray-900">{entry.tenant_name}</span>
                   </td>
                   <td className="px-6 py-2 whitespace-nowrap">
-                    <span className="text-sm font-bold text-gray-900">{entry.vehicle.plate}</span>
+                    <span className="text-base font-bold text-gray-900">{entry.vehicle.plate}</span>
+                  </td>
+                  <td className="px-6 py-2 whitespace-nowrap">
+                    <span className="text-sm text-gray-600">{entry.vehicle.company || '---'}</span>
                   </td>
                   <td className="px-6 py-2 whitespace-nowrap">
                     {entry.notes ? (
-                      <span className="text-xs text-gray-500 italic max-w-[150px] truncate block" title={entry.notes}>
+                      <span className="text-sm text-gray-500 italic max-w-[150px] truncate block" title={entry.notes}>
                         {entry.notes}
                       </span>
                     ) : (
-                      <span className="text-xs text-gray-400 italic">---</span>
+                      <span className="text-sm text-gray-400 italic">---</span>
                     )}
                   </td>
                   <td className="px-6 py-2 whitespace-nowrap">
@@ -915,21 +920,21 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
                         </div>
                       )}
                       <div className="flex flex-col">
-                        <span className="text-sm font-medium text-gray-900">{entry.driver.name}</span>
-                        <span className="text-xs text-gray-500">{entry.driver.document}</span>
+                        <span className="text-base font-medium text-gray-900">{entry.driver.name}</span>
+                        <span className="text-sm text-gray-500">{entry.driver.document}</span>
                       </div>
                     </div>
                   </td>
                   <td className="px-6 py-2 whitespace-nowrap">
-                    <span className="text-sm text-gray-900">{entry.registered_by_name}</span>
+                    <span className="text-base text-gray-900">{entry.registered_by_name}</span>
                   </td>
                   <td className="px-6 py-2 whitespace-nowrap">
-                    <div className="flex items-center text-xs text-gray-900">
+                    <div className="flex items-center text-sm text-gray-900">
                       <Calendar className="w-3 h-3 mr-1.5 text-green-600" />
                       {formatDateTime(entry.entry_time)}
                     </div>
                   </td>
-                  <td className="px-6 py-2 whitespace-nowrap text-xs text-gray-500">
+                  <td className="px-6 py-2 whitespace-nowrap text-sm text-gray-500">
                     <div className="flex items-center justify-center gap-2">
                       <span className="font-medium">{entry.entry_weight ? `${entry.entry_weight} kg` : '---'}</span>
                       <button 
@@ -944,7 +949,7 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
                       </button>
                     </div>
                   </td>
-                  <td className="px-6 py-2 whitespace-nowrap text-xs text-gray-500 text-center">
+                  <td className="px-6 py-2 whitespace-nowrap text-sm text-gray-500 text-center">
                     <div className="flex items-center justify-center gap-2">
                       <span className="font-medium">{entry.exit_weight ? `${entry.exit_weight} kg` : '---'}</span>
                       <button 
@@ -971,10 +976,10 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
                       >
                         <MapPin className="w-5 h-5" />
                       </a>
-                    ) : <span className="text-xs text-gray-400">---</span>}
+                    ) : <span className="text-sm text-gray-400">---</span>}
                   </td>
                   <td className="px-6 py-2 whitespace-nowrap max-w-[200px]">
-                    <span className="text-xs text-gray-500 truncate block" title={addresses[entry.id] || (entry.location ? 'Carregando endereço...' : 'Sem localização')}>
+                    <span className="text-sm text-gray-500 truncate block" title={addresses[entry.id] || (entry.location ? 'Carregando endereço...' : 'Sem localização')}>
                       {addresses[entry.id] 
                         ? addresses[entry.id] 
                         : (entry.location ? <span className="animate-pulse">Buscando endereço...</span> : '---')}
@@ -1015,13 +1020,13 @@ export default function EntriesList({ tenantId: propTenantId }: { tenantId?: str
                           e.stopPropagation();
                           handleOpenExitModal(entry);
                         }}
-                        className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 shadow-sm transition-colors"
+                        className="inline-flex items-center px-3 py-1.5 border border-transparent text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 shadow-sm transition-colors"
                       >
                         <LogOut className="w-3 h-3 mr-1.5" />
                         Saída
                       </button>
                     ) : (
-                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-sm font-medium bg-gray-100 text-gray-800">
                         Finalizado
                       </span>
                     )}

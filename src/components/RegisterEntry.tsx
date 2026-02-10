@@ -13,6 +13,7 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
   const { user, userProfile, signOut } = useAuth() as any;
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [vehiclesMap, setVehiclesMap] = useState<Record<string, Vehicle[]>>({});
   const [selectedDriver, setSelectedDriver] = useState('');
   const [selectedVehicle, setSelectedVehicle] = useState('');
   const [newPlate, setNewPlate] = useState('');
@@ -20,6 +21,10 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
   const [vehicleModel, setVehicleModel] = useState('');
   const [vehicleColor, setVehicleColor] = useState('');
   const [vehicleCompany, setVehicleCompany] = useState('');
+  const [isNewDriver, setIsNewDriver] = useState(false);
+  const [newDriverName, setNewDriverName] = useState('');
+  const [newDriverDocument, setNewDriverDocument] = useState('');
+  const [newDriverPhone, setNewDriverPhone] = useState('');
   const [notes, setNotes] = useState('');
   const [vehiclePhoto, setVehiclePhoto] = useState<File | null>(null);
   const [platePhoto, setPlatePhoto] = useState<File | null>(null);
@@ -29,7 +34,7 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [isNewVehicle, setIsNewVehicle] = useState(false);
-  const [tenants, setTenants] = useState<{id: string, name: string}[]>([]);
+  const [tenants, setTenants] = useState<{id: string, name: string, parentId?: string}[]>([]);
   const [currentTenantId, setCurrentTenantId] = useState<string>('');
   const [checkingAccess, setCheckingAccess] = useState(true);
   const [isRestrictedMode, setIsRestrictedMode] = useState(false);
@@ -86,45 +91,61 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
           }
         }
 
-        let list: {id: string, name: string}[] = [];
+        let list: {id: string, name: string, parentId?: string}[] = [];
         let isRestricted = false;
 
         // Busca todas as empresas do Realtime Database
         const tenantsRef = ref(database, 'tenants');
         
         // Se for admin/dono, busca todas as empresas que ele é dono
+        // 1. Se for admin/dono (sem restrição de allowedTenants), busca por owner_id
         if (!isRestricted && (!allowedTenants || allowedTenants.length === 0)) {
              const q = rtdbQuery(tenantsRef, orderByChild('owner_id'), equalTo(user.uid));
              const snapshot = await get(q);
              if (snapshot.exists()) {
                snapshot.forEach((child) => {
-                 list.push({ id: child.key!, name: child.val().name });
+                 list.push({ id: child.key!, name: child.val().name, parentId: child.val().parentId });
                });
              }
+        }
+
+        // 2. Se tiver permissões explícitas, busca as permitidas
+        if (allowedTenants && Array.isArray(allowedTenants)) {
+             const promises = allowedTenants.map(tenantId => get(ref(database, `tenants/${tenantId}`)));
+             const snapshots = await Promise.all(promises);
              
-             // Fallback: Tenta buscar pelo ID padrão se a lista estiver vazia
-             if (list.length === 0 && defaultId) {
-                const tenantSnap = await get(ref(database, `tenants/${defaultId}`));
-                if (tenantSnap.exists()) {
-                   list.push({ id: defaultId, name: tenantSnap.val().name });
+             snapshots.forEach((snap, index) => {
+                if (snap.exists()) {
+                    list.push({ id: allowedTenants[index], name: snap.val().name, parentId: snap.val().parentId });
                 }
-             }
-        } else {
-             // Se tiver permissões explícitas, busca apenas as permitidas
-             // Nota: RTDB não tem "in" query, então buscamos uma a uma ou todas e filtramos
-             // Para eficiência em listas pequenas, buscamos individualmente
-             if (allowedTenants && Array.isArray(allowedTenants)) {
-                 // OTIMIZAÇÃO: Busca todas as empresas em paralelo (Promise.all) ao invés de uma por uma
-                 const promises = allowedTenants.map(tenantId => get(ref(database, `tenants/${tenantId}`)));
-                 const snapshots = await Promise.all(promises);
-                 
-                 snapshots.forEach((snap, index) => {
-                    if (snap.exists()) {
-                        list.push({ id: allowedTenants[index], name: snap.val().name });
-                    }
-                 });
-             }
-          }
+             });
+        }
+
+        // 3. Garante que a empresa padrão (do perfil) esteja na lista
+        if (defaultId && !list.some(t => t.id === defaultId)) {
+            const tenantSnap = await get(ref(database, `tenants/${defaultId}`));
+            if (tenantSnap.exists()) {
+               list.push({ id: defaultId, name: tenantSnap.val().name, parentId: tenantSnap.val().parentId });
+            }
+        }
+
+        // 4. Busca FILIAIS (children) das empresas encontradas
+        const parentIds = list.map(t => t.id);
+        if (parentIds.length > 0) {
+            const childrenPromises = parentIds.map(pid => 
+                get(rtdbQuery(tenantsRef, orderByChild('parentId'), equalTo(pid)))
+            );
+            const childrenSnapshots = await Promise.all(childrenPromises);
+            childrenSnapshots.forEach(snap => {
+                if (snap.exists()) {
+                    snap.forEach(child => {
+                        if (!list.some(t => t.id === child.key)) {
+                            list.push({ id: child.key!, name: child.val().name, parentId: child.val().parentId });
+                        }
+                    });
+                }
+            });
+        }
 
         // Remove duplicatas
         list = list.filter((v, i, a) => a.findIndex(t => t.id === v.id) === i);
@@ -181,26 +202,46 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
   };
 
   useEffect(() => {
+    // Combina veículos de todas as fontes (matriz + filial)
+    const allVehicles = Object.values(vehiclesMap).flat();
+    // Remove duplicatas por ID
+    const uniqueVehicles = Array.from(new Map(allVehicles.map(v => [v.id, v])).values());
+    uniqueVehicles.sort((a, b) => (a.plate || '').localeCompare(b.plate || ''));
+    setVehicles(uniqueVehicles);
+  }, [vehiclesMap]);
+
+  useEffect(() => {
     if (!currentTenantId) return;
 
-    // Busca todos os veículos da empresa no Realtime Database (Tempo Real)
-    const vehiclesRef = ref(database, `tenants/${currentTenantId}/vehicles`);
-    const unsubscribe = onValue(vehiclesRef, (snapshot) => {
-      const allVehicles: Vehicle[] = [];
-      if (snapshot.exists()) {
-        snapshot.forEach((child) => {
-          allVehicles.push({ id: child.key!, ...child.val() });
-        });
-      }
+    const currentTenant = tenants.find(t => t.id === currentTenantId);
+    const tenantIdsToListen = [currentTenantId];
+    
+    // Se for filial, também escuta a matriz para trazer veículos cadastrados lá
+    if (currentTenant?.parentId) {
+        tenantIdsToListen.push(currentTenant.parentId);
+    }
 
-      allVehicles.sort((a, b) => (a.plate || '').localeCompare(b.plate || ''));
-      setVehicles(allVehicles);
-    }, (error) => {
-      console.error('Erro ao carregar veículos:', error);
+    const unsubscribes: (() => void)[] = [];
+    setVehiclesMap({}); // Limpa ao mudar de empresa
+
+    tenantIdsToListen.forEach(tid => {
+        const vehiclesRef = ref(database, `tenants/${tid}/vehicles`);
+        const unsubscribe = onValue(vehiclesRef, (snapshot) => {
+          const list: Vehicle[] = [];
+          if (snapshot.exists()) {
+            snapshot.forEach((child) => {
+              list.push({ id: child.key!, ...child.val() });
+            });
+          }
+          setVehiclesMap(prev => ({ ...prev, [tid]: list }));
+        }, (error) => {
+          console.error(`Erro ao carregar veículos de ${tid}:`, error);
+        });
+        unsubscribes.push(unsubscribe);
     });
 
-    return () => unsubscribe();
-  }, [currentTenantId]);
+    return () => unsubscribes.forEach(u => u());
+  }, [currentTenantId, tenants]);
 
   useEffect(() => {
     loadDrivers();
@@ -298,12 +339,29 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
       if (!currentTenantId) {
         throw new Error('Selecione uma empresa para registrar a entrada.');
       }
-      
-      if (!selectedDriver) {
-        throw new Error('Por favor, selecione o motorista.');
-      }
 
       const tenantId = currentTenantId;
+      let driverId = selectedDriver;
+      const savePromises = [];
+
+      if (isNewDriver) {
+          if (!newDriverName || !newDriverDocument) {
+              throw new Error('Nome e Documento do motorista são obrigatórios.');
+          }
+          const newDriverRef = push(ref(database, `tenants/${tenantId}/drivers`));
+          driverId = newDriverRef.key!;
+          
+          const driverData = {
+              name: newDriverName,
+              document: newDriverDocument,
+              phone: newDriverPhone,
+              created_at: new Date().toISOString(),
+              created_by: user?.uid
+          };
+          savePromises.push(set(newDriverRef, driverData));
+      } else if (!selectedDriver) {
+          throw new Error('Por favor, selecione o motorista.');
+      }
 
       // Garante que a "pasta" (documento) da empresa exista explicitamente no banco
       // RTDB: Atualiza last_activity
@@ -319,7 +377,6 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
 
       // Lógica de salvamento robusta (Geração de ID antecipada)
       let vehicleId = selectedVehicle;
-      const vehicleSavePromises = [];
 
       if (isNewVehicle) {
         if (!selectedDriver) {
@@ -335,19 +392,18 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
           model: vehicleModel,
           color: vehicleColor,
           company: vehicleCompany,
-          // O driver_id aqui é redundante pois já está no caminho, mas pode ser útil
-          driver_id: selectedDriver, 
+          driver_id: driverId, 
           created_at: new Date().toISOString()
         };
 
         // Aguarda salvamento real do veículo
-        vehicleSavePromises.push(set(newVehicleRef, vehicleData));
+        savePromises.push(set(newVehicleRef, vehicleData));
       }
 
       // Aguarda uploads e o início do salvamento do veículo
       const [[vehiclePhotoUrl, platePhotoUrl]] = await Promise.all([
         uploadsPromise,
-        ...vehicleSavePromises
+        ...savePromises
       ]);
 
       // Atualiza o cadastro do veículo com as fotos recentes
@@ -360,7 +416,9 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
       }
 
       // Otimização: Salvar dados desnormalizados para leitura rápida na lista
-      const driverSnapshot = drivers.find(d => d.id === selectedDriver);
+      const driverSnapshot = isNewDriver 
+        ? { name: newDriverName, document: newDriverDocument, photo_url: '', phone: newDriverPhone }
+        : drivers.find(d => d.id === selectedDriver);
       const vehicleSnapshot = isNewVehicle 
         ? { plate: newPlate.toUpperCase(), brand: vehicleBrand, model: vehicleModel, color: vehicleColor, company: vehicleCompany }
         : vehicles.find(v => v.id === selectedVehicle);
@@ -369,7 +427,7 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
       const newEntryRef = push(ref(database, `tenants/${tenantId}/entries`));
       const entryData = {
         vehicle_id: vehicleId,
-        driver_id: selectedDriver,
+        driver_id: driverId,
         vehicle_photo_url: vehiclePhotoUrl,
         plate_photo_url: platePhotoUrl,
         notes,
@@ -394,6 +452,10 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
 
       setSelectedDriver('');
       setSelectedVehicle('');
+      setIsNewDriver(false);
+      setNewDriverName('');
+      setNewDriverDocument('');
+      setNewDriverPhone('');
       setNewPlate('');
       setVehicleBrand('');
       setVehicleModel('');
@@ -458,8 +520,8 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
       
       <div className={isRestrictedMode ? "max-w-6xl mx-auto" : ""}>
       <div className="mb-8">
-        <h2 className="text-2xl font-bold text-gray-800">Registrar Entrada</h2>
-        <p className="text-gray-500">Preencha os dados do motorista e veículo para liberar o acesso.</p>
+        <h2 className="text-3xl font-bold text-gray-800">Registrar Entrada</h2>
+        <p className="text-xl text-gray-500">Preencha os dados do motorista e veículo para liberar o acesso.</p>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-8">
@@ -470,12 +532,12 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
               <div className="p-2 bg-blue-50 rounded-lg">
                 <Building2 className="w-6 h-6 text-blue-600" />
               </div>
-              <h3 className="text-lg font-semibold text-gray-800">Unidade / Empresa</h3>
+              <h3 className="text-2xl font-semibold text-gray-800">Unidade / Empresa</h3>
             </div>
             <select
               value={currentTenantId}
               onChange={(e) => setCurrentTenantId(e.target.value)}
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-gray-50 transition-all"
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-gray-50 transition-all text-lg"
             >
               {tenants.map(tenant => (
                 <option key={tenant.id} value={tenant.id}>{tenant.name}</option>
@@ -493,12 +555,12 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
                 <div className="p-2 bg-blue-50 rounded-lg">
                   <User className="w-6 h-6 text-blue-600" />
                 </div>
-                <h3 className="text-lg font-semibold text-gray-800">Identificação</h3>
+                <h3 className="text-2xl font-semibold text-gray-800">Identificação</h3>
               </div>
               
               <div className="space-y-6 flex-1">
                 <div className="relative">
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-lg font-medium text-gray-700 mb-2">
                     Selecione o Motorista
                   </label>
                   
@@ -522,7 +584,7 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
                             <User className="w-5 h-5" />
                           </div>
                       )}
-                      <span className={`truncate ${selectedDriver ? "text-gray-900 font-medium" : "text-gray-500"}`}>
+                      <span className={`truncate text-lg ${selectedDriver ? "text-gray-900 font-medium" : "text-gray-500"}`}>
                         {selectedDriverData ? `${selectedDriverData.name} - ${selectedDriverData.document}` : "Selecione na lista..."}
                       </span>
                     </div>
@@ -539,7 +601,7 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
                             placeholder="Buscar por nome ou CPF..."
                             value={driverSearch}
                             onChange={(e) => setDriverSearch(e.target.value)}
-                            className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
                             autoFocus
                           />
                         </div>
@@ -554,6 +616,7 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
                               type="button"
                               onClick={() => {
                                 setSelectedDriver(driver.id);
+                                setIsNewDriver(false);
                                 setSelectedVehicle('');
                                 setIsNewVehicle(false);
                                 setIsDriverListOpen(false);
@@ -573,8 +636,8 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
                                 </div>
                               )}
                               <div className="min-w-0">
-                                <p className="text-sm font-medium text-gray-900 truncate">{driver.name}</p>
-                                <p className="text-xs text-gray-500 truncate">{driver.document}</p>
+                                <p className="text-lg font-medium text-gray-900 truncate">{driver.name}</p>
+                                <p className="text-base text-gray-500 truncate">{driver.document}</p>
                               </div>
                               {selectedDriver === driver.id && (
                                 <Check className="w-4 h-4 text-blue-600 ml-auto shrink-0" />
@@ -586,12 +649,74 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
                               Nenhum motorista encontrado.
                             </div>
                           )}
+                          <button
+                              type="button"
+                              onClick={() => {
+                                  setSelectedDriver('new');
+                                  setIsNewDriver(true);
+                                  setIsDriverListOpen(false);
+                                  setDriverSearch('');
+                                  setSelectedVehicle('');
+                                  setIsNewVehicle(false);
+                              }}
+                              className="w-full px-4 py-3 flex items-center gap-3 hover:bg-blue-50 transition-colors text-left bg-blue-50/50"
+                          >
+                              <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center border border-blue-200 text-blue-600 shrink-0">
+                                  <Plus className="w-5 h-5" />
+                              </div>
+                              <span className="text-lg font-bold text-blue-700">Cadastrar Novo Motorista</span>
+                          </button>
                       </div>
                     </div>
                   )}
                 </div>
 
-                {selectedDriverData && (
+                {isNewDriver ? (
+                  <div className="bg-blue-50/50 p-6 rounded-xl border border-blue-100 space-y-5 animate-in slide-in-from-top-4 duration-300">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xl font-semibold text-blue-900 flex items-center gap-2">
+                        <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                        Novo Motorista
+                      </h4>
+                      <span className="text-sm font-medium text-blue-700 bg-blue-100 px-2 py-1 rounded">Cadastro Rápido</span>
+                    </div>
+                    
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-600 uppercase tracking-wider mb-1.5">Nome Completo</label>
+                        <input
+                          type="text"
+                          value={newDriverName}
+                          onChange={(e) => setNewDriverName(e.target.value)}
+                          className="w-full px-4 py-2.5 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white text-lg"
+                          required
+                          placeholder="Nome do Motorista"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-600 uppercase tracking-wider mb-1.5">CPF / Documento</label>
+                        <input
+                          type="text"
+                          value={newDriverDocument}
+                          onChange={(e) => setNewDriverDocument(e.target.value)}
+                          className="w-full px-4 py-2.5 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white text-lg"
+                          required
+                          placeholder="000.000.000-00"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-600 uppercase tracking-wider mb-1.5">Telefone</label>
+                        <input
+                          type="text"
+                          value={newDriverPhone}
+                          onChange={(e) => setNewDriverPhone(e.target.value)}
+                          className="w-full px-4 py-2.5 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white text-lg"
+                          placeholder="(00) 00000-0000"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ) : selectedDriverData && (
                   <div className="flex flex-col items-center justify-center py-4 animate-in fade-in duration-500">
                     <div className="relative mb-4 group">
                       {selectedDriverData.photo_url ? (
@@ -614,8 +739,8 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
                     </div>
                     
                     <div className="text-center">
-                      <h4 className="text-xl font-bold text-gray-900">{selectedDriverData.name}</h4>
-                      <div className="inline-flex items-center mt-2 px-3 py-1 bg-gray-100 rounded-full text-sm text-gray-600 font-medium">
+                      <h4 className="text-3xl font-bold text-gray-900">{selectedDriverData.name}</h4>
+                      <div className="inline-flex items-center mt-2 px-3 py-1 bg-gray-100 rounded-full text-lg text-gray-600 font-medium">
                         CPF: {selectedDriverData.document}
                       </div>
                     </div>
@@ -632,12 +757,12 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
                 <div className="p-2 bg-blue-50 rounded-lg">
                   <Truck className="w-6 h-6 text-blue-600" />
                 </div>
-                <h3 className="text-lg font-semibold text-gray-800">Dados do Veículo</h3>
+                <h3 className="text-2xl font-semibold text-gray-800">Dados do Veículo</h3>
               </div>
 
               <div className="space-y-6">
                 <div className="transition-all duration-300">
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-lg font-medium text-gray-700 mb-2">
                     Selecione o Veículo
                   </label>
                   
@@ -668,9 +793,8 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
                                   <Truck className="w-5 h-5" />
                               </div>
                            )}
-                           <span className={`truncate ${selectedVehicle ? "text-gray-900 font-medium" : "text-gray-500"}`}>
-                              {selectedVehicle === 'new' ? 'Novo Veículo' : (selectedVehicleData ? `${selectedVehicleData.plate} - ${selectedVehicleData.brand} ${selectedVehicleData.model}` : (selectedDriver ? "Selecione o veículo..." : "Aguardando motorista..."))}
-                              {selectedVehicle === 'new' ? 'Novo Veículo' : (selectedVehicleData ? `${selectedVehicleData.plate} - ${selectedVehicleData.brand} ${selectedVehicleData.model}` : "Selecione o veículo...")}
+                           <span className={`truncate text-lg ${selectedVehicle ? "text-gray-900 font-medium" : "text-gray-500"}`}>
+                              {selectedVehicle === 'new' ? 'Novo Veículo' : (selectedVehicleData ? `${selectedVehicleData.plate} - ${selectedVehicleData.company || 'Particular'}` : (selectedDriver ? "Selecione o veículo..." : "Aguardando motorista..."))}
                            </span>
                        </div>
                        <ChevronDown className={`w-5 h-5 text-gray-400 transition-transform shrink-0 ${isVehicleListOpen ? 'rotate-180' : ''}`} />
@@ -686,7 +810,7 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
                                       placeholder="Buscar por placa, modelo..."
                                       value={vehicleSearch}
                                       onChange={(e) => setVehicleSearch(e.target.value)}
-                                      className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                      className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
                                       autoFocus
                                   />
                               </div>
@@ -726,8 +850,8 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
                                               </div>
                                           )}
                                           <div className="min-w-0">
-                                              <p className="text-sm font-medium text-gray-900 truncate">{vehicle.plate}</p>
-                                              <p className="text-xs text-gray-500 truncate">{vehicle.brand} {vehicle.model}</p>
+                                              <p className="text-lg font-medium text-gray-900 truncate">{vehicle.plate}</p>
+                                              <p className="text-base text-gray-500 truncate">{vehicle.brand} {vehicle.model}</p>
                                           </div>
                                           {selectedVehicle === vehicle.id && (
                                               <Check className="w-4 h-4 text-blue-600 ml-auto shrink-0" />
@@ -748,7 +872,7 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
                                   <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center border border-blue-200 text-blue-600 shrink-0">
                                       <Plus className="w-5 h-5" />
                                   </div>
-                                  <span className="text-sm font-bold text-blue-700">Cadastrar Novo Veículo</span>
+                                  <span className="text-lg font-bold text-blue-700">Cadastrar Novo Veículo</span>
                               </button>
                           </div>
                       </div>
@@ -759,62 +883,62 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
                 {isNewVehicle && (
                   <div className="bg-blue-50/50 p-6 rounded-xl border border-blue-100 space-y-5 animate-in slide-in-from-top-4 duration-300">
                     <div className="flex items-center justify-between">
-                      <h4 className="font-semibold text-blue-900 flex items-center gap-2">
+                      <h4 className="text-xl font-semibold text-blue-900 flex items-center gap-2">
                         <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
                         Novo Veículo
                       </h4>
-                      <span className="text-xs font-medium text-blue-700 bg-blue-100 px-2 py-1 rounded">Cadastro Rápido</span>
+                      <span className="text-sm font-medium text-blue-700 bg-blue-100 px-2 py-1 rounded">Cadastro Rápido</span>
                     </div>
                     
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
                       <div>
-                        <label className="block text-xs font-semibold text-gray-600 uppercase tracking-wider mb-1.5">Placa</label>
+                        <label className="block text-sm font-semibold text-gray-600 uppercase tracking-wider mb-1.5">Placa</label>
                         <input
                           type="text"
                           value={newPlate}
                           onChange={(e) => setNewPlate(e.target.value.toUpperCase())}
-                          className="w-full px-4 py-2.5 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
+                          className="w-full px-4 py-2.5 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white text-lg"
                           required
                           placeholder="ABC-1234"
                         />
                       </div>
                       <div>
-                        <label className="block text-xs font-semibold text-gray-600 uppercase tracking-wider mb-1.5">Marca</label>
+                        <label className="block text-sm font-semibold text-gray-600 uppercase tracking-wider mb-1.5">Marca</label>
                         <input
                           type="text"
                           value={vehicleBrand}
                           onChange={(e) => setVehicleBrand(e.target.value)}
-                          className="w-full px-4 py-2.5 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
+                          className="w-full px-4 py-2.5 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white text-lg"
                           placeholder="Ex: Toyota"
                         />
                       </div>
                       <div>
-                        <label className="block text-xs font-semibold text-gray-600 uppercase tracking-wider mb-1.5">Modelo</label>
+                        <label className="block text-sm font-semibold text-gray-600 uppercase tracking-wider mb-1.5">Modelo</label>
                         <input
                           type="text"
                           value={vehicleModel}
                           onChange={(e) => setVehicleModel(e.target.value)}
-                          className="w-full px-4 py-2.5 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
+                          className="w-full px-4 py-2.5 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white text-lg"
                           placeholder="Ex: Corolla"
                         />
                       </div>
                       <div>
-                        <label className="block text-xs font-semibold text-gray-600 uppercase tracking-wider mb-1.5">Cor</label>
+                        <label className="block text-sm font-semibold text-gray-600 uppercase tracking-wider mb-1.5">Cor</label>
                         <input
                           type="text"
                           value={vehicleColor}
                           onChange={(e) => setVehicleColor(e.target.value)}
-                          className="w-full px-4 py-2.5 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
+                          className="w-full px-4 py-2.5 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white text-lg"
                           placeholder="Ex: Preto"
                         />
                       </div>
                       <div className="sm:col-span-2">
-                        <label className="block text-xs font-semibold text-gray-600 uppercase tracking-wider mb-1.5">Empresa</label>
+                        <label className="block text-sm font-semibold text-gray-600 uppercase tracking-wider mb-1.5">Empresa</label>
                         <input
                           type="text"
                           value={vehicleCompany}
                           onChange={(e) => setVehicleCompany(e.target.value)}
-                          className="w-full px-4 py-2.5 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
+                          className="w-full px-4 py-2.5 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white text-lg"
                           placeholder="Ex: Transportadora XYZ"
                         />
                       </div>
@@ -832,13 +956,13 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
             <div className="p-2 bg-blue-50 rounded-lg">
               <Camera className="w-6 h-6 text-blue-600" />
             </div>
-            <h3 className="text-lg font-semibold text-gray-800">Registro Fotográfico e Observações</h3>
+            <h3 className="text-2xl font-semibold text-gray-800">Registro Fotográfico e Observações</h3>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
             {/* Foto do Veículo */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-3">Foto do Veículo</label>
+              <label className="block text-lg font-medium text-gray-700 mb-3">Foto do Veículo</label>
               <input
                 ref={vehiclePhotoRef}
                 type="file"
@@ -858,7 +982,7 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
                     <img src={vehiclePhotoPreview} alt="Veículo" className="w-full h-full object-cover" />
                     <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200">
                       <Camera className="w-8 h-8 text-white mb-2" />
-                      <span className="text-white text-sm font-medium">Clique para alterar</span>
+                      <span className="text-white text-base font-medium">Clique para alterar</span>
                     </div>
                     <button
                       type="button"
@@ -877,8 +1001,8 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
                     <div className="bg-gray-100 p-3 rounded-full mb-3 group-hover:bg-blue-100 transition-colors">
                       <Camera className="w-8 h-8 text-gray-400 group-hover:text-blue-500 transition-colors" />
                     </div>
-                    <span className="text-sm font-medium text-gray-600 group-hover:text-blue-600">Adicionar Foto do Veículo</span>
-                    <span className="text-xs text-gray-400 mt-1">Formatos: JPG, PNG</span>
+                    <span className="text-lg font-medium text-gray-600 group-hover:text-blue-600">Adicionar Foto do Veículo</span>
+                    <span className="text-sm text-gray-400 mt-1">Formatos: JPG, PNG</span>
                   </div>
                 )}
               </div>
@@ -886,7 +1010,7 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
 
             {/* Foto da Placa */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-3">Foto da Placa</label>
+              <label className="block text-lg font-medium text-gray-700 mb-3">Foto da Placa</label>
               <input
                 ref={platePhotoRef}
                 type="file"
@@ -906,7 +1030,7 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
                     <img src={platePhotoPreview} alt="Placa" className="w-full h-full object-cover" />
                     <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200">
                       <Camera className="w-8 h-8 text-white mb-2" />
-                      <span className="text-white text-sm font-medium">Clique para alterar</span>
+                      <span className="text-white text-base font-medium">Clique para alterar</span>
                     </div>
                     <button
                       type="button"
@@ -925,8 +1049,8 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
                     <div className="bg-gray-100 p-3 rounded-full mb-3 group-hover:bg-blue-100 transition-colors">
                       <Camera className="w-8 h-8 text-gray-400 group-hover:text-blue-500 transition-colors" />
                     </div>
-                    <span className="text-sm font-medium text-gray-600 group-hover:text-blue-600">Adicionar Foto da Placa</span>
-                    <span className="text-xs text-gray-400 mt-1">Formatos: JPG, PNG</span>
+                    <span className="text-lg font-medium text-gray-600 group-hover:text-blue-600">Adicionar Foto da Placa</span>
+                    <span className="text-sm text-gray-400 mt-1">Formatos: JPG, PNG</span>
                   </div>
                 )}
               </div>
@@ -934,11 +1058,11 @@ export default function RegisterEntry({ onSuccess, tenantId: propTenantId }: Pro
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Observações Adicionais</label>
+            <label className="block text-lg font-medium text-gray-700 mb-2">Observações Adicionais</label>
             <textarea
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all resize-none bg-gray-50 focus:bg-white"
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all resize-none bg-gray-50 focus:bg-white text-lg"
               rows={3}
               placeholder="Ex: Entrega de material, visita técnica, prestador de serviço..."
             />
